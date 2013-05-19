@@ -1,0 +1,10 @@
+Initial attempts to create an Ubuntu Touch interface for Trojita.
+
+Install instructions:
+Change into the source directory
+$ mkdir build; cd build
+$ qmake CONFIG+=ubuntu_touch ../trojita.pro
+$ make
+$ make install
+
+The added 'make install' step is to deploy the 'qml' and 'resources' folders with the build.
