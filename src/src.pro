@@ -9,8 +9,12 @@ lessThan(QT_MAJOR_VERSION, 5) {
 trojita_harmattan {
     SUBDIRS += QmlSupport Harmattan
 } else {
-    SUBDIRS += Gui
-    XtConnect:SUBDIRS += XtConnect
+    ubuntu_touch {
+        SUBDIRS += QmlSupport UbuntuTouch
+    } else {
+        SUBDIRS += Gui
+        XtConnect:SUBDIRS += XtConnect
+    }
 }
 
 CODECFORTR = UTF-8
