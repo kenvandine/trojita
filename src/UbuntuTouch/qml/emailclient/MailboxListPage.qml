@@ -119,7 +119,15 @@ Page {
 
         ListView {
             id: view
-            anchors.fill: parent
+            spacing: units.gu(1)
+
+            anchors {
+                top: header.bottom
+                left: parent.left
+                right: parent.right
+                bottom: parent.bottom
+                margins: units.gu(1)
+            }
             focus: true
             delegate: mailboxItemDelegate
 
@@ -133,6 +141,7 @@ Page {
         Label {
             id: header
             text: viewTitle
+            anchors.margins: units.gu(1)
             fontSize: "large"
             anchors {left: parent.left; right: parent.right; top: parent.top}
         }

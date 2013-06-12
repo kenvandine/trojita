@@ -29,7 +29,7 @@ Flickable {
     ListModel {
         id: encryptionMethodModel
         ListElement {
-            name: "No"
+            name: "No Encryption"
             port: 143
         }
         ListElement {
@@ -145,7 +145,7 @@ Flickable {
         Button {
             id: encryptionMethodBtn
             anchors {left: col.left; right: col.right;}
-            text: i18n.tr("Security:")
+            text: encryptionMethodModel.get(imapSslModeIndex).name
 
             onClicked: {
                 PopupUtils.open(encryptionMethodSelector,encryptionMethodBtn)

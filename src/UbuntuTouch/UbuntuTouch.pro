@@ -13,7 +13,8 @@ resourcesFolder.files = resources/*
 #destination folder in the build directory and the install directory
 INSTALLS += qmlFolder mainQml resourcesFolder
 
-SOURCES += main.cpp
+SOURCES += main.cpp \
+    webviewnet.cpp
 TARGET = trojita-tp
 
 INCLUDEPATH += ../
@@ -52,3 +53,6 @@ OTHER_FILES += \
     qml/emailclient/BackButton.qml \
     qml/emailclient/AddressWidget.qml \
     qml/emailclient/Utils.js
+
+HEADERS += \
+    webviewnet.h

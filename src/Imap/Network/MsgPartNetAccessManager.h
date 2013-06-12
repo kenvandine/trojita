@@ -32,6 +32,10 @@ namespace Gui
 class PartWidgetFactory;
 }
 
+namespace UbuntuTouch {
+class WebViewNetManager;
+}
+
 namespace Imap
 {
 
@@ -63,6 +67,7 @@ public slots:
     void setExternalsEnabled(bool enabled);
 private:
     friend class Gui::PartWidgetFactory;
+    friend class UbuntuTouch::WebViewNetManager;
     QPersistentModelIndex message;
 
     bool externalsEnabled;

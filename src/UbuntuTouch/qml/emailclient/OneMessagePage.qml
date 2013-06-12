@@ -95,8 +95,37 @@ Page {
                     id: messageView
                     //preferredWidth: view.width
                     width: view.width
-                    height: 150
-                    url: "http://www.google.co.uk"
+                    height: 300
+                    //url: "http://www.ubuntu.com"
+
+                    onNavigationRequested: {
+                        console.log("URL is:"+request.url);
+                        if((request.url.toString()) == "about:blank") request.action = 0;
+                        else {
+                            if((request.url.toString()).substring(0,7) == "trojita") {
+                                console.log("IS Trojita");
+                                request.action = 1;
+                                messageView.loadHtml(webViewReply.getMessageFromURL(messageView,messageView.url));
+                            }
+                            else {
+                                console.log("Is NOT Trojita");
+                                messageView.loadHtml("NOT TROJITA SO NOT LOADING");
+                                request.action = 1;
+                            }
+                        }
+                    }
+
+                    /*onUrlChanged: {
+                        console.log("URL Changed: "+messageView.url);
+                        messageView.loadHtml(webViewReply.getMessageFromURL(url));
+                    }*/
+                }
+
+                Button {
+                    id: urlBtn
+                    onClicked: {
+                        messageView.url = messageView.url
+                    }
                 }
 
                 // FIXME: move this to a dedicated page...
@@ -162,7 +191,7 @@ Page {
     }*/
 
     Component.onCompleted: {
-        console.log(url);
+        //console.log(url);
         console.log(mailbox);
         imapAccess.oneMessageModel.envelopeChanged.connect(handleChangedEnvelope)
     }

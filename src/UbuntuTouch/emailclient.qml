@@ -59,7 +59,7 @@ MainView {
     }
 
     function showHome() {
-        tabs.selectedTabIndex = 1;
+        tabs.selectedTabIndex = 0;
         mailboxListPage.nestingDepth = 0
         mailboxListPage.currentMailbox = ""
         mailboxListPage.currentMailboxLong = ""
@@ -68,18 +68,11 @@ MainView {
     }
 
     Component.onCompleted: {
-        if (imapSettings.imapServer != imapAccess.server)
-            imapAccess.forgetSslCertificate()
-        imapAccess.server = imapSettings.imapServer
-        imapAccess.port = imapSettings.imapPort
-        imapAccess.username = imapSettings.imapUserName
-        if (imapSettings.imapPassword.length)
-            imapAccess.password = imapSettings.imapPassword
-        imapAccess.sslMode = imapSettings.imapSslMode
+        imapAccess.sslMode = imapAccess.sslMode
         connectModels()
     }
 
-    width: units.gu(50)
+    width: units.gu(150)
     height: units.gu(75)
 
     ToolbarActions {
@@ -102,7 +95,7 @@ MainView {
     Tabs {
         id: tabs
         anchors.fill: parent
-        
+
         Tab {
             id: mailboxTab
             title: "Mailboxes"
@@ -134,18 +127,20 @@ MainView {
                 }
 
                 MessageListPage {
-                id: messageListPage
-                model: imapAccess.msgListModel ? imapAccess.msgListModel : undefined
+                    id: messageListPage
+                    model: imapAccess.msgListModel ? imapAccess.msgListModel : undefined
 
-                onMessageSelected: {
-                    imapAccess.openMessage(mailboxListPage.currentMailboxLong, uid)
-                    pageStack.push(Qt.resolvedUrl("qml/emailclient/OneMessagePage.qml"),
-                                   {
-                                       mailbox: mailboxListPage.currentMailboxLong,
-                                       url: imapAccess.oneMessageModel.mainPartUrl.toString()
-                                   })
+                    onMessageSelected: {
+                        imapAccess.openMessage(mailboxListPage.currentMailboxLong, uid)
+                        pageStack.push(Qt.resolvedUrl("qml/emailclient/OneMessagePage.qml"),
+                                       {
+                                           mailbox: mailboxListPage.currentMailboxLong,
+                                           url: imapAccess.oneMessageModel.mainPartUrl.toString()
+                                       })
+
+                        //console.log(imapAccess.oneMessageModel.mainPartUrl.toString());
+                    }
                 }
-            }
             }
         }
     }
