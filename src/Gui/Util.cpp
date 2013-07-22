@@ -1,4 +1,5 @@
 /* Copyright (C) 2006 - 2011 Thomas Gahr <thomas.gahr@physik.uni-muenchen.de>
+   Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,16 +23,35 @@
 
 
 #include <QApplication>
+#include <QBuffer>
+#include <QCheckBox>
 #include <QCursor> // for Util::centerWidgetOnScreen
 #include <QDesktopWidget> // for Util::centerWidgetOnScreen
 #include <QDir>
+#include <QGridLayout>
+#include <QIcon>
+#include <QProcess>
 #include <QSettings>
 
 #include "Util.h"
+#include "Window.h"
 
 namespace {
 
-#ifdef Q_WS_X11
+bool isRunningKde4()
+{
+    return qgetenv("KDE_SESSION_VERSION") == "4";
+}
+
+bool isRunningGnome()
+{
+    return qgetenv("DESKTOP_SESSION") == "gnome";
+}
+
+bool isRunningXfce()
+{
+    return qgetenv("DESKTOP_SESSION") == "xfce";
+}
 
 /** @short Return full path to the $KDEHOME
 
@@ -54,8 +74,6 @@ QString kdeHome()
     }
     return kdeHomePath;
 }
-
-#endif
 
 }
 
@@ -128,25 +146,109 @@ QColor tintColor(const QColor &color, const QColor &tintColor)
 /** @short Return the monospace font according to the systemwide settings */
 QFont systemMonospaceFont()
 {
-    QString fontDescription;
-    QFont font;
-#ifdef Q_WS_X11
-    // This part was shamelessly inspired by Qt4's src/gui/kernel/qapplication_x11.cpp
-    QSettings kdeSettings(::kdeHome() + QLatin1String("/share/config/kdeglobals"), QSettings::IniFormat);
-    QLatin1String confKey("fixed");
-    fontDescription = kdeSettings.value(confKey).toStringList().join(QLatin1String(","));
-    if (fontDescription.isEmpty())
-        fontDescription = kdeSettings.value(confKey).toString();
-#endif
-    if (fontDescription.isEmpty() || !font.fromString(fontDescription)) {
+    static bool initialized = false;
+    static QFont font;
+
+    if (!initialized) {
+        if (isRunningKde4()) {
+            // This part was shamelessly inspired by Qt4's src/gui/kernel/qapplication_x11.cpp
+            QSettings kdeSettings(::kdeHome() + QLatin1String("/share/config/kdeglobals"), QSettings::IniFormat);
+            QLatin1String confKey("fixed");
+            QString fontDescription = kdeSettings.value(confKey).toStringList().join(QLatin1String(","));
+            if (fontDescription.isEmpty())
+                fontDescription = kdeSettings.value(confKey).toString();
+            initialized = !fontDescription.isEmpty() && font.fromString(fontDescription);
+        } else if (isRunningGnome() || isRunningXfce()) {
+            // Under Gnome and Xfce, we can read the preferred font in yet another format via gconftool-2
+            QByteArray fontDescription;
+            do {
+                QProcess gconf;
+                gconf.start(QLatin1String("gconftool-2"),
+                            QStringList() << QLatin1String("--get") << QLatin1String("/desktop/gnome/interface/monospace_font_name"));
+                if (!gconf.waitForStarted())
+                    break;
+                gconf.closeWriteChannel();
+                if (!gconf.waitForFinished())
+                    break;
+                fontDescription = gconf.readAllStandardOutput();
+                fontDescription = fontDescription.trimmed();
+            } while (0);
+
+            // This value is apparently supposed to be parsed via the pango_font_description_from_string function. We, of course,
+            // do not link with Pango, so we attempt to do a very crude parsing experiment by hand.
+            // This code does *not* handle many fancy options like specifying the font size in pixels, parsing the bold/italics
+            // options etc. It will also very likely break when the user has specified preefrences for more than one font family.
+            // However, I hope it's better to try to do something than ignoring the problem altogether.
+            int lastSpace = fontDescription.lastIndexOf(' ');
+            bool ok;
+            double size = fontDescription.mid(lastSpace).toDouble(&ok);
+            if (lastSpace > 0 && ok) {
+                font = QFont(fontDescription.left(lastSpace), size);
+                initialized = true;
+            }
+        }
+    }
+
+    if (!initialized) {
         // Ok, that failed, let's create some fallback font.
         // The problem is that these names wary acros platforms,
         // but the following works well -- at first, we come up with a made-up name, and then
         // let the Qt font substitution algorithm do its magic.
         font = QFont(QLatin1String("x-trojita-terminus-like-fixed-width"));
+        // Using QFont::Monospace results in a proportional font on jkt's system
         font.setStyleHint(QFont::TypeWriter);
+
+        // Gnome, Mac and perhaps everyone else uses 10pt as the default font size, so let's use that as well
+        int defaultPointSize = 10;
+        if (isRunningKde4()) {
+            // kdeui/kernel/kglobalsettings.cpp from KDELIBS sets default fixed font size to 9 on X11. Let's hope nobody runs
+            // this desktop-GUI-specific code *with KDE* under Harmattan or Mac. Seriously.
+            defaultPointSize = 9;
+
+        }
+        font.setPointSize(defaultPointSize);
     }
+
     return font;
+}
+
+/** @short Ask for something and provide a facility to not ask again
+
+Check settings whether an option is already set to ignore this question. If not, ask the user and remember whether
+she wants to be asked again.
+*/
+int askForSomethingUnlessTold(const QString &title, const QString &message, const QString &settingsName,
+                              QMessageBox::StandardButtons buttons, QWidget *parent)
+{
+    int saved = QSettings().value(settingsName, -1).toInt();
+    if (saved != -1) {
+        // This means that we're not supposed to ask again
+        return saved;
+    }
+
+    QMessageBox box(QMessageBox::Question, title, message, QMessageBox::NoButton, parent);
+    box.setStandardButtons(buttons);
+    QCheckBox *checkbox = new QCheckBox(Gui::MainWindow::tr("Don't ask again"), &box);
+    QGridLayout *layout = qobject_cast<QGridLayout*>(box.layout());
+    Q_ASSERT(layout);
+    layout->addWidget(checkbox, 1, 1);
+    int res = box.exec();
+    if (checkbox->isChecked())
+        QSettings().setValue(settingsName, res);
+    return res;
+}
+
+/** @short Return image data from the specified filename as a self-contained URL of the data: scheme
+
+The image is resized and always returned in the PNG format.
+*/
+QString resizedImageAsDataUrl(const QString &fileName, const int extent)
+{
+    QByteArray bdata;
+    QBuffer buf(&bdata);
+    buf.open(QIODevice::WriteOnly);
+    QIcon(fileName).pixmap(extent).toImage().save(&buf, "png");
+    return QLatin1String("data:image/png;base64,") + QString::fromUtf8(bdata.toBase64());
 }
 
 } // namespace Util

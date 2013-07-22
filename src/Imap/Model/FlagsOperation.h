@@ -23,12 +23,16 @@
 #ifndef IMAP_MODEL_FLAGS_H
 #define IMAP_MODEL_FLAGS_H
 
+#include <QString>
+
 namespace Imap
 {
 namespace Mailbox
 {
 
 typedef enum { FLAG_ADD, FLAG_REMOVE, FLAG_ADD_SILENT, FLAG_REMOVE_SILENT, FLAG_USE_THESE } FlagsOperation;
+
+QString toImapString(const Imap::Mailbox::FlagsOperation flagOperation);
 
 }
 }

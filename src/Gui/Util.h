@@ -1,4 +1,5 @@
 /* Copyright (C) 2006 - 2011 Thomas Gahr <thomas.gahr@physik.uni-muenchen.de>
+   Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,6 +25,7 @@
 #ifndef GUI_UTIL_H
 #define GUI_UTIL_H
 
+#include <QMessageBox>
 #include <QString>
 
 class QColor;
@@ -44,6 +46,11 @@ QString pkgDataDir();
 QColor tintColor(const QColor &color, const QColor &tintColor);
 
 QFont systemMonospaceFont();
+
+int askForSomethingUnlessTold(const QString &title, const QString &message, const QString &settingsName,
+                              QMessageBox::StandardButtons buttons, QWidget *parent);
+
+QString resizedImageAsDataUrl(const QString &fileName, const int extent);
 
 } // namespace Util
 

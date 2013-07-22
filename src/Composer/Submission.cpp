@@ -92,7 +92,8 @@ Submission::~Submission()
 void Submission::changeConnectionState(const SubmissionProgress state)
 {
     m_state = state;
-    m_model->logTrace(0, Common::LOG_OTHER, QLatin1String("Submission"), submissionProgressToString(m_state));
+    if (m_model)
+        m_model->logTrace(0, Common::LOG_OTHER, QLatin1String("Submission"), submissionProgressToString(m_state));
 
     // Now broadcast a human-readable message and update the progress dialog
     switch (state) {
@@ -156,12 +157,25 @@ void Submission::setImapOptions(const bool saveToSentFolder, const QString &sent
 void Submission::setSmtpOptions(const bool useBurl, const QString &smtpUsername)
 {
     m_useBurl = useBurl;
+    if (m_useBurl && !m_model->isGenUrlAuthSupported()) {
+        m_model->logTrace(0, Common::LOG_OTHER, QLatin1String("Submission"), tr("Cannot BURL without the URLAUTH extension"));
+        m_useBurl = false;
+    }
     m_smtpUsername = smtpUsername;
     m_composer->setPreloadEnabled(shouldBuildMessageLocally());
 }
 
 void Submission::send()
 {
+    if (!m_model) {
+        gotError(tr("The IMAP connection has disappeared. "
+                    "You'll have close the composer, save the draft and re-open it later. "
+                    "The attachments will have to be added later. Sorry for the trouble, "
+                    "please see <a href=\"https://projects.flaska.net/issues/640\">https://projects.flaska.net/issues/640</a> "
+                    "for details."));
+        return;
+    }
+
     // this double-updating is needed in case the same Submission attempts to send a message more than once
     changeConnectionState(STATE_INIT);
     changeConnectionState(STATE_BUILDING_MESSAGE);
@@ -184,16 +198,13 @@ void Submission::slotMessageDataAvailable()
     QString errorMessage;
     QList<Imap::Mailbox::CatenatePair> catenateable;
 
-    if (shouldBuildMessageLocally()) {
-        if (!m_composer->asRawMessage(&buf, &errorMessage)) {
-            gotError(tr("Cannot send right now -- saving failed:\n %1").arg(errorMessage));
-            return;
-        }
-    } else {
-        if (!m_composer->asCatenateData(catenateable, &errorMessage)) {
-            gotError(tr("Cannot send right now -- saving (CATENATE) failed:\n %1").arg(errorMessage));
-            return;
-        }
+    if (shouldBuildMessageLocally() && !m_composer->asRawMessage(&buf, &errorMessage)) {
+        gotError(tr("Cannot send right now -- saving failed:\n %1").arg(errorMessage));
+        return;
+    }
+    if (m_model->isCatenateSupported() && !m_composer->asCatenateData(catenateable, &errorMessage)) {
+        gotError(tr("Cannot send right now -- saving (CATENATE) failed:\n %1").arg(errorMessage));
+        return;
     }
 
     if (m_saveToSentFolder) {
@@ -204,7 +215,7 @@ void Submission::slotMessageDataAvailable()
         changeConnectionState(STATE_SAVING);
         QPointer<Imap::Mailbox::AppendTask> appendTask = 0;
 
-        if (m_model->isCatenateSupported() && !shouldBuildMessageLocally()) {
+        if (m_model->isCatenateSupported()) {
             // FIXME: without UIDPLUS, there isn't much point in $SubmitPending...
             appendTask = QPointer<Imap::Mailbox::AppendTask>(
                         m_model->appendIntoMailbox(
@@ -272,7 +283,8 @@ void Submission::slotInvokeMsaNow()
 
 void Submission::gotError(const QString &error)
 {
-    m_model->logTrace(0, Common::LOG_OTHER, QLatin1String("Submission"), QString::fromUtf8("gotError: %1").arg(error));
+    if (m_model)
+        m_model->logTrace(0, Common::LOG_OTHER, QLatin1String("Submission"), QString::fromUtf8("gotError: %1").arg(error));
     changeConnectionState(STATE_FAILED);
     emit failed(error);
 }

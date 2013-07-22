@@ -22,6 +22,7 @@
 #ifndef IMAP_ENCODERS_H
 #define IMAP_ENCODERS_H
 
+#include <QMap>
 #include <QString>
 
 namespace Imap {
@@ -38,6 +39,8 @@ typedef enum {
     RFC2047_STRING_UTF8
 } Rfc2047StringCharacterSetType;
 
+QString decodeByteArray(const QByteArray &encoded, const QString &charset);
+
 QByteArray quotedString(const QByteArray &unquoted, QuotedStringStyle style = DoubleQuoted);
 QByteArray encodeRFC2047Phrase(const QString &text);
 
@@ -50,6 +53,9 @@ QString decodeImapFolderName(const QByteArray &raw);
 
 QByteArray quotedPrintableDecode(const QByteArray &raw);
 QByteArray quotedPrintableEncode(const QByteArray &raw);
+
+QString extractRfc2231Param(const QMap<QByteArray, QByteArray> &parameters, const QByteArray &key);
+QByteArray encodeRfc2231Parameter(const QByteArray &key, const QString &value);
 
 }
 

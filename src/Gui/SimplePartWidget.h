@@ -27,6 +27,7 @@
 #include "Composer/PlainTextFormatter.h"
 #include <QAction>
 #include <QFile>
+#include <QPersistentModelIndex>
 
 class QModelIndex;
 class QNetworkReply;
@@ -35,13 +36,14 @@ namespace Imap
 {
 namespace Network
 {
-class FileDownloadManager;
 class MsgPartNetAccessManager;
 }
 }
 
 namespace Gui
 {
+
+class MessageView;
 
 /** @short Widget that handles display of primitive message parts
 
@@ -53,22 +55,26 @@ class SimplePartWidget : public EmbeddedWebView, public AbstractPartWidget
 {
     Q_OBJECT
 public:
-    SimplePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &partIndex);
+    SimplePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &partIndex,
+                     MessageView *messageView);
     virtual QString quoteMe() const;
     virtual void reloadContents();
     QList<QAction *> contextMenuSpecificActions() const;
-    void connectGuiInteractionEvents(QObject *guiInteractionTarget);
 private slots:
     void slotTransferError(const QString &errorString);
     void slotFileNameRequested(QString *fileName);
     void slotMarkupPlainText();
+    void slotDownloadPart();
+    void slotDownloadMessage();
 signals:
     void linkHovered(const QString &link, const QString &title, const QString &textContent);
     void searchDialogRequested();
 private:
-    QAction *saveAction;
+    QPersistentModelIndex m_partIndex;
+    QAction *m_savePart;
+    QAction *m_saveMessage;
     QAction *m_findAction;
-    Imap::Network::FileDownloadManager *fileDownloadManager;
+    Imap::Network::MsgPartNetAccessManager *m_netAccessManager;
     Composer::Util::FlowedFormat flowedFormat;
 
     SimplePartWidget(const SimplePartWidget &); // don't implement

@@ -33,6 +33,8 @@ class QPushButton;
 namespace Gui
 {
 
+class MessageView;
+
 /** @short Widget which implements delayed loading of message parts
 
   This class supports two modes of loading, either a "click-through" one for loading message parts
@@ -47,12 +49,12 @@ public:
     /** @short Load when the widget becomes visible, or wait until the user clicks a button? */
     typedef enum {
         LOAD_ON_SHOW, /**< @short Load as soon as the widget becomes visible */
-        LOAD_ON_CLICK /**< @short Load onlt after the user has clicked a button */
+        LOAD_ON_CLICK /**< @short Load only after the user has clicked a button */
     } LoadingTriggerMode;
     LoadablePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &part,
-                       QObject *wheelEventFilter, QObject *guiInteractionTarget, const LoadingTriggerMode mode);
+                       MessageView *messageView, const LoadingTriggerMode mode);
     QString quoteMe() const;
-    virtual void reloadContents() {}
+    virtual void reloadContents();
 protected:
     virtual void showEvent(QShowEvent *event);
 private slots:
@@ -60,9 +62,8 @@ private slots:
 private:
     Imap::Network::MsgPartNetAccessManager *manager;
     QPersistentModelIndex partIndex;
+    MessageView *m_messageView;
     SimplePartWidget *realPart;
-    QObject *wheelEventFilter;
-    QObject *guiInteractionTarget;
     QPushButton *loadButton;
     bool m_loadOnShow;
 

@@ -25,22 +25,38 @@
 #include <QModelIndex>
 #include <QLabel>
 
+namespace Imap {
+namespace Message {
+class MailAddress;
+}
+}
+
 namespace Gui {
+
+class MessageView;
 
 /** @short Widget displaying the message envelope */
 class EnvelopeView : public QLabel
 {
     Q_OBJECT
 public:
-    explicit EnvelopeView(QWidget *parent=0);
+    EnvelopeView(QWidget *parent, MessageView *messageView);
 
     void setMessage(const QModelIndex &index);
+
+signals:
+    /** Emitted when requesting a list of addresses for a given mail */
+    void addressDetailsRequested(const QString &mail, QStringList &addresses);
 
 private slots:
     void onLinkHovered(const QString &target);
 
 private:
     QString headerText(const QModelIndex &index);
+
+    QString htmlizeAddresses(const QList<Imap::Message::MailAddress> &addresses);
+
+    QString contactKnownUrl, contactUnknownUrl;
 
     EnvelopeView(const EnvelopeView &); // don't implement
     EnvelopeView &operator=(const EnvelopeView &); // don't implement

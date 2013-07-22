@@ -33,6 +33,7 @@
 #include "IconLoader.h"
 #include "LineEdit.h"
 #include "MsgListView.h"
+#include "ReplaceCharValidator.h"
 
 namespace Gui {
 
@@ -42,9 +43,17 @@ MessageListWidget::MessageListWidget(QWidget *parent) :
     tree = new MsgListView(this);
 
     m_quickSearchText = new LineEdit(this);
+    // Filter out newline. It will wreak havoc into the direct IMAP passthrough and could lead to data loss.
+    QValidator *validator = new ReplaceCharValidator(QLatin1Char('\n'), QLatin1Char(' '), m_quickSearchText);
+    m_quickSearchText->setValidator(validator);
 #if QT_VERSION >= 0x040700
-    m_quickSearchText->setPlaceholderText(tr("Quick Search / Leading \":=\" for direct IMAP search"));
+    m_quickSearchText->setPlaceholderText(tr("Quick Search"));
 #endif
+    m_quickSearchText->setToolTip(tr("Type in a text to search for within this mailbox. "
+                                     "The icon on the left can be used to limit the search options "
+                                     "(like whether to include addresses or message bodies, etc)."
+                                     "<br/><hr/>"
+                                     "Experts who have read RFC3501 can use the <code>:=</code> prefix and switch to a raw IMAP mode."));
     m_queryPlaceholder = tr("<query>");
 
     connect(m_quickSearchText, SIGNAL(returnPressed()), this, SLOT(slotApplySearch()));

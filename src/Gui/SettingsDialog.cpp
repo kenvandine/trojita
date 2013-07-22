@@ -45,6 +45,7 @@
 #include "Composer/SenderIdentitiesModel.h"
 #include "Common/PortNumbers.h"
 #include "Common/SettingsNames.h"
+#include "Gui/Util.h"
 
 namespace Gui
 {
@@ -139,6 +140,9 @@ GeneralPage::GeneralPage(QWidget *parent, QSettings &s, Composer::SenderIdentiti
                                         "<p>The remote server will receive the user's IP address and versions of Trojitá, the Qt library, "
                                         "and the underlying operating system. No private information, like account settings "
                                         "or IMAP server details, are collected.</p>"));
+
+    guiSystrayCheckbox->setChecked(s.value(Common::SettingsNames::guiShowSystray, QVariant(true)).toBool());
+
     preferPlaintextCheckbox->setChecked(s.value(Common::SettingsNames::guiPreferPlaintextRendering).toBool());
 
     connect(identityTabelView, SIGNAL(clicked(QModelIndex)), SLOT(updateWidgets()));
@@ -223,6 +227,7 @@ void GeneralPage::save(QSettings &s)
     m_identitiesModel->saveToSettings(s);
     s.setValue(Common::SettingsNames::appLoadHomepage, showHomepageCheckbox->isChecked());
     s.setValue(Common::SettingsNames::guiPreferPlaintextRendering, preferPlaintextCheckbox->isChecked());
+    s.setValue(Common::SettingsNames::guiShowSystray, guiSystrayCheckbox->isChecked());
 }
 
 EditIdentity::EditIdentity(QWidget *parent, Composer::SenderIdentitiesModel *identitiesModel, const QModelIndex &currentIndex):
@@ -247,14 +252,7 @@ EditIdentity::EditIdentity(QWidget *parent, Composer::SenderIdentitiesModel *ide
     connect(this, SIGNAL(accepted()), m_mapper, SLOT(submit()));
     connect(this, SIGNAL(rejected()), this, SLOT(onReject()));
     setModal(true);
-
-    // See ComposeWidget.cpp for details on the selection of font
-    QFont font(QLatin1String("x-trojita-terminus-like-fixed-width"));
-    font.setStyleHint(QFont::TypeWriter);
-    signaturePlainTextEdit->setFont(font);
-    // The QFontMetrics prodocues weird results, unfortunately :(
-    /*QFontMetrics(font).boundingRect(
-        QLatin1String("A simple signature which spans 80 column is surprisingly hard to come up with...")).width()*/
+    signaturePlainTextEdit->setFont(Gui::Util::systemMonospaceFont());
 }
 
 void EditIdentity::enableButton()
@@ -286,8 +284,12 @@ ImapPage::ImapPage(QWidget *parent, QSettings &s): QScrollArea(parent), Ui_ImapP
         method->setCurrentIndex(0);
     } else if (QSettings().value(SettingsNames::imapMethodKey).toString() == SettingsNames::methodSSL) {
         method->setCurrentIndex(1);
-    } else {
+    } else if (QSettings().value(SettingsNames::imapMethodKey).toString() == SettingsNames::methodProcess) {
         method->setCurrentIndex(2);
+    } else {
+        // Default settings -- let's assume SSL and hope that users who just press Cancel will configure when they see
+        // the network error...
+        method->setCurrentIndex(1);
     }
 
     imapHost->setText(s.value(SettingsNames::imapHostKey).toString());
@@ -375,19 +377,31 @@ void ImapPage::save(QSettings &s)
     }
     switch (method->currentIndex()) {
     case TCP:
-        s.setValue(SettingsNames::imapMethodKey, SettingsNames::methodTCP);
+        if (imapHost->text().isEmpty()) {
+            s.remove(SettingsNames::imapMethodKey);
+        } else {
+            s.setValue(SettingsNames::imapMethodKey, SettingsNames::methodTCP);
+        }
         s.setValue(SettingsNames::imapHostKey, imapHost->text());
         s.setValue(SettingsNames::imapPortKey, imapPort->text());
         s.setValue(SettingsNames::imapStartTlsKey, startTls->isChecked());
         break;
     case SSL:
-        s.setValue(SettingsNames::imapMethodKey, SettingsNames::methodSSL);
+        if (imapHost->text().isEmpty()) {
+            s.remove(SettingsNames::imapMethodKey);
+        } else {
+            s.setValue(SettingsNames::imapMethodKey, SettingsNames::methodSSL);
+        }
         s.setValue(SettingsNames::imapHostKey, imapHost->text());
         s.setValue(SettingsNames::imapPortKey, imapPort->text());
         s.setValue(SettingsNames::imapStartTlsKey, startTls->isChecked());
         break;
     default:
-        s.setValue(SettingsNames::imapMethodKey, SettingsNames::methodProcess);
+        if (processPath->text().isEmpty()) {
+            s.remove(SettingsNames::imapMethodKey);
+        } else {
+            s.setValue(SettingsNames::imapMethodKey, SettingsNames::methodProcess);
+        }
         s.setValue(SettingsNames::imapProcessKey, processPath->text());
     }
     s.setValue(SettingsNames::imapUserKey, imapUser->text());
@@ -492,16 +506,19 @@ OutgoingPage::OutgoingPage(QWidget *parent, QSettings &s): QScrollArea(parent), 
     smtpAuth->setChecked(s.value(SettingsNames::smtpAuthKey, false).toBool());
     smtpUser->setText(s.value(SettingsNames::smtpUserKey).toString());
     smtpPass->setText(s.value(SettingsNames::smtpPassKey).toString());
+    passwordWarning->setStyleSheet(SettingsDialog::warningStyleSheet);
     sendmail->setText(s.value(SettingsNames::sendmailKey, SettingsNames::sendmailDefaultCmd).toString());
     saveToImap->setChecked(s.value(SettingsNames::composerSaveToImapKey, true).toBool());
     // Would be cool to support the special-use mailboxes
     saveFolderName->setText(s.value(SettingsNames::composerImapSentKey, QLatin1String("Sent")).toString());
     smtpBurl->setChecked(s.value(SettingsNames::smtpUseBurlKey, false).toBool());
 
+    connect(smtpPass, SIGNAL(textChanged(QString)), this, SLOT(maybeShowPasswordWarning()));
     connect(method, SIGNAL(currentIndexChanged(int)), this, SLOT(updateWidgets()));
     connect(smtpAuth, SIGNAL(toggled(bool)), this, SLOT(updateWidgets()));
     connect(saveToImap, SIGNAL(toggled(bool)), this, SLOT(updateWidgets()));
     updateWidgets();
+    maybeShowPasswordWarning();
 }
 
 void OutgoingPage::resizeEvent(QResizeEvent *event)
@@ -620,6 +637,11 @@ void OutgoingPage::save(QSettings &s)
         // BURL depends on having that message available on IMAP somewhere
         s.setValue(SettingsNames::smtpUseBurlKey, false);
     }
+}
+
+void OutgoingPage::maybeShowPasswordWarning()
+{
+    passwordWarning->setVisible(!smtpPass->text().isEmpty());
 }
 
 #ifdef XTUPLE_CONNECT

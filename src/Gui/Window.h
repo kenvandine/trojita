@@ -25,20 +25,28 @@
 
 #include <QMainWindow>
 #include <QModelIndex>
+#include <QPointer>
+#include <QSystemTrayIcon>
 
 #include "Composer/Recipients.h"
 #include "Imap/ConnectionState.h"
 #include "Imap/Model/Cache.h"
 
 class QAuthenticator;
+class QCloseEvent;
 class QItemSelection;
 class QModelIndex;
 class QScrollArea;
 class QSplitter;
 class QSslCertificate;
 class QSslError;
+class QStackedWidget;
 class QToolButton;
 class QTreeView;
+
+namespace BE {
+class Contacts;
+}
 
 namespace Composer
 {
@@ -75,6 +83,8 @@ class MainWindow: public QMainWindow
 {
     Q_OBJECT
     typedef QList<QPair<Composer::RecipientKind,QString> > RecipientsType;
+
+    typedef enum { LAYOUT_COMPACT, LAYOUT_WIDE, LAYOUT_ONE_AT_TIME } LayoutMode;
 public:
     MainWindow();
     ComposeWidget *invokeComposeDialog(const QString &subject = QString(), const QString &body = QString(),
@@ -88,7 +98,8 @@ public:
 
     const AbstractAddressbook *addressBook() const { return m_addressBook; }
     Composer::SenderIdentitiesModel *senderIdentitiesModel() { return m_senderIdentities; }
-
+protected:
+    void closeEvent(QCloseEvent *event);
 private slots:
     void showContextMenuMboxTree(const QPoint &position);
     void showContextMenuMsgListTree(const QPoint &position);
@@ -108,6 +119,7 @@ private slots:
     void sslErrors(const QList<QSslCertificate> &certificateChain, const QList<QSslError> &errors);
     void requireStartTlsInFuture();
     void slotComposeMailUrl(const QUrl &url);
+    void slotManageContact(const QUrl &url);
     void slotComposeMail();
     void slotEditDraft();
     void slotReplyTo();
@@ -123,8 +135,10 @@ private slots:
     void msgListClicked(const QModelIndex &);
     void msgListDoubleClicked(const QModelIndex &);
     void slotCreateMailboxBelowCurrent();
+    void slotMarkCurrentMailboxRead();
     void slotCreateTopMailbox();
     void slotDeleteCurrentMailbox();
+    void handleTrayIconChange();
 #ifdef XTUPLE_CONNECT
     void slotXtSyncCurrentMailbox();
 #endif
@@ -135,6 +149,7 @@ private slots:
     void scrollMessageUp();
     void showConnectionStatus(QObject *parser, Imap::ConnectionState state);
     void slotShowLinkTarget(const QString &link);
+    void fillMatchingAbookEntries(const QString &mail, QStringList &displayNames);
     void slotShowAboutTrojita();
     void slotDonateToTrojita();
 
@@ -159,6 +174,18 @@ private slots:
 
     void slotLayoutCompact();
     void slotLayoutWide();
+    void slotLayoutOneAtTime();
+    void saveSizesAndState();
+    void possiblyLoadMessageOnSplittersChanged();
+
+    void desktopGeometryChanged();
+
+    void slotIconActivated(const QSystemTrayIcon::ActivationReason reason);
+    void slotToggleSysTray();
+    void invokeContactEditor();
+
+protected:
+    void resizeEvent(QResizeEvent *);
 
 private:
     void defineActions();
@@ -175,8 +202,12 @@ private:
     void updateActionsOnlineOffline(bool online);
 
     void migrateSettings();
+    void applySizesAndState();
+    QString settingsKeyForLayout(const LayoutMode layout);
 
     void recoverDrafts();
+    void createSysTray();
+    void removeSysTray();
 
     Imap::Mailbox::Model *model;
     Imap::Mailbox::MailboxModel *mboxModel;
@@ -198,8 +229,12 @@ private:
     ProtocolLoggerWidget *imapLogger;
     QDockWidget *imapLoggerDock;
 
-    QSplitter *m_mainHSplitter;
-    QSplitter *m_mainVSplitter;
+    QPointer<QSplitter> m_mainHSplitter;
+    QPointer<QSplitter> m_mainVSplitter;
+    QPointer<QStackedWidget> m_mainStack;
+
+    LayoutMode m_layoutMode;
+    bool m_skipSavingOfUI;
 
     QAction *reloadMboxList;
     QAction *reloadAllMailboxes;
@@ -216,6 +251,7 @@ private:
     QAction *showMenuBar;
     QAction *showToolBar;
     QAction *configSettings;
+    QAction *m_oneAtTimeGoBack;
     QAction *composeMail;
     QAction *m_editDraft;
     QAction *m_replyPrivate;
@@ -256,6 +292,8 @@ private:
     QAction *m_actionSortDescending;
     QAction *m_actionLayoutCompact;
     QAction *m_actionLayoutWide;
+    QAction *m_actionLayoutOneAtTime;
+    QAction *m_actionMarkMailboxAsRead;
 
     QAction *m_actionSubscribeMailbox;
     QAction *m_actionShowOnlySubscribed;
@@ -272,9 +310,12 @@ private:
     bool m_ignoreStoredPassword;
 
     AbstractAddressbook *m_addressBook;
+    QPointer<BE::Contacts> m_contactsWidget;
 
     MainWindow(const MainWindow &); // don't implement
     MainWindow &operator=(const MainWindow &); // don't implement
+
+    QSystemTrayIcon *m_trayIcon;
 };
 
 }

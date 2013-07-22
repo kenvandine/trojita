@@ -25,19 +25,6 @@
 
 namespace {
 
-    static void enumerateCodecs()
-    {
-        static bool enumerated = false;
-
-        if (!enumerated) {
-            qWarning() << "Available codecs:";
-            Q_FOREACH (const QByteArray& codec, QTextCodec::availableCodecs())
-                qWarning() << "  " << codec;
-
-            enumerated = true;
-        }
-    }
-
     static QTextCodec* codecForName(const QByteArray& charset, bool translateAscii = true)
     {
         QByteArray encoding(charset.toLower());
@@ -56,23 +43,13 @@ namespace {
 
             QTextCodec* codec = QTextCodec::codecForName(encoding);
             if (!codec) {
-                qWarning() << "QMailCodec::codecForName - Unable to find codec for charset" << encoding;
-                enumerateCodecs();
+                qWarning() << "codecForName: Unable to find codec for charset" << encoding;
             }
 
             return codec;
         }
 
         return 0;
-    }
-
-    /** @short Interpret the raw byte array as a sequence of bytes in the given encoding */
-    static QString decodeByteArray(const QByteArray &encoded, const QString &charset)
-    {
-        if (QTextCodec *codec = codecForName(charset.toLatin1())) {
-            return codec->toUnicode(encoded);
-        }
-        return QString();
     }
 
     // ASCII character values used throughout
@@ -92,6 +69,33 @@ namespace {
         if (unicode > MaxPrintableRange)
             return true;
         return false;
+    }
+
+    /** @short Check the given unicode code point if it has to be escaped according to RFC 2231
+
+    The rules might be a little stricter than required, actually.
+    */
+    static inline bool rfc2311NeedsEscaping(const int unicode)
+    {
+        const unsigned char Ascii_Zero = 0x30;
+        const unsigned char Ascii_Nine = 0x39;
+        const unsigned char Ascii_A = 0x41;
+        const unsigned char Ascii_Z = 0x5a;
+        const unsigned char Ascii_a = 0x61;
+        const unsigned char Ascii_z = 0x7a;
+        const unsigned char Ascii_Minus = 0x2d;
+        const unsigned char Ascii_Dot = 0x2e;
+        const unsigned char Ascii_Underscore = 0x5f;
+
+        if (unicode == Ascii_Minus || unicode == Ascii_Dot || unicode == Ascii_Underscore)
+            return false;
+        if (unicode >= Ascii_Zero && unicode <= Ascii_Nine)
+            return false;
+        if (unicode >= Ascii_A && unicode <= Ascii_Z)
+            return false;
+        if (unicode >= Ascii_a && unicode <= Ascii_z)
+            return false;
+        return true;
     }
 
     /** @short Find the most efficient encoding for the given unicode string
@@ -163,13 +167,37 @@ namespace {
         return res;
     }
 
+
+    /** @short Translate a percent-encoded array of bytes into binary characters
+
+    The only transformation performed is RFC 2231 percent decoding.
+    */
+    static inline QByteArray translatePercentToBin(const QByteArray &input)
+    {
+        QByteArray res;
+        for (int i = 0; i < input.size(); ++i) {
+            if (input[i] == '%' && i < input.size() - 2) {
+                int hi = hexValueOfChar(input[++i]);
+                int lo = hexValueOfChar(input[++i]);
+                if (hi != -1 && lo != -1) {
+                    res += static_cast<char>((hi << 4) + lo);
+                } else {
+                    res += input.mid(i - 2, 3);
+                }
+            } else {
+                res += input[i];
+            }
+        }
+        return res;
+    }
+
     /** @short Decode an encoded-word as per RFC2047 into a unicode string */
     static QString decodeWord(const QByteArray &fullWord, const QByteArray &charset, const QByteArray &encoding, const QByteArray &encoded)
     {
         if (encoding == "Q") {
-            return decodeByteArray(translateQuotedPrintableToBin(encoded), charset);
+            return Imap::decodeByteArray(translateQuotedPrintableToBin(encoded), charset);
         } else if (encoding == "B") {
-            return decodeByteArray(QByteArray::fromBase64(encoded), charset);
+            return Imap::decodeByteArray(QByteArray::fromBase64(encoded), charset);
         } else {
             return fullWord;
         }
@@ -184,7 +212,7 @@ namespace {
 
         // Any idea why this isn't matching?
         //QRegExp encodedWord("\\b=\\?\\S+\\?\\S+\\?\\S*\\?=\\b");
-        QRegExp encodedWord("\"?=(\\?\\S+)\\?(\\S+)\\?(.*)\\?=\"?");
+        QRegExp encodedWord("\"?=\\?(\\S+)\\?(\\S+)\\?(.*)\\?=\"?");
 
         // set minimal=true, to match sequences which do not have whit space in between 2 encoded words; otherwise by default greedy matching is performed
         // eg. "Sm=?ISO-8859-1?B?9g==?=rg=?ISO-8859-1?B?5Q==?=sbord" will match "=?ISO-8859-1?B?9g==?=rg=?ISO-8859-1?B?5Q==?=" as a single encoded word without minimal=true
@@ -216,9 +244,15 @@ namespace {
         }
 
         // Copy anything left
-        out.append(str.mid(lastPos));
+        out.append(QString::fromUtf8(str.mid(lastPos)));
 
         return out;
+    }
+
+    QByteArray toHexChar(const ushort unicode, char prefix)
+    {
+        const char hexChars[] = "0123456789ABCDEF";
+        return QByteArray() + prefix + hexChars[(unicode >> 4) & 0xf] + hexChars[unicode & 0xf];
     }
 
 }
@@ -281,8 +315,7 @@ QByteArray encodeRFC2047String(const QString &text, const Rfc2047StringCharacter
             } else if (!rfc2047QPNeedsEscpaing(unicode)) {
                 symbol += text[i].toLatin1();
             } else {
-                const char hexChars[] = "0123456789ABCDEF";
-                symbol = QByteArray("=") + hexChars[(unicode >> 4) & 0xf] + hexChars[unicode & 0xf];
+                symbol = toHexChar(unicode, '=');
             }
             currentLineLength += symbol.size();
             if (currentLineLength > maximumEncoded) {
@@ -297,6 +330,14 @@ QByteArray encodeRFC2047String(const QString &text, const Rfc2047StringCharacter
     }
 }
 
+/** @short Interpret the raw byte array as a sequence of bytes in the given encoding */
+QString decodeByteArray(const QByteArray &encoded, const QString &charset)
+{
+    if (QTextCodec *codec = codecForName(charset.toLatin1())) {
+        return codec->toUnicode(encoded);
+    }
+    return QString::fromUtf8(encoded, encoded.size());
+}
 
 /** @short Encode the given string into RFC2047 form, preserving the ASCII leading part if possible */
 QByteArray encodeRFC2047StringWithAsciiPrefix(const QString &text)
@@ -441,6 +482,86 @@ QByteArray encodeRFC2047Phrase( const QString &text )
     /* If the text has characters outside of the basic ASCII set, then
        it has to be encoded using the RFC2047 encoded-word syntax. */
     return encodeRFC2047String(text, RFC2047_STRING_UTF8);
+}
+
+/** @short Decode RFC2231-style eextended parameter values into a real Unicode string */
+QString extractRfc2231Param(const QMap<QByteArray, QByteArray> &parameters, const QByteArray &key)
+{
+    QMap<QByteArray, QByteArray>::const_iterator it = parameters.constFind(key);
+    if (it != parameters.constEnd()) {
+        // This parameter is not using the RFC 2231 syntax for extended parameters.
+        // I have no idea whether this is correct, but I *guess* that trying to use RFC2047 is not going to hurt.
+        return decodeRFC2047String(*it);
+    }
+
+    if (parameters.constFind(key + "*0") != parameters.constEnd()) {
+        // There's a 2231-style continuation *without* the language/charset extension
+        QByteArray raw;
+        int num = 0;
+        while ((it = parameters.constFind(key + '*' + QByteArray::number(num++))) != parameters.constEnd()) {
+            raw += *it;
+        }
+        return decodeRFC2047String(raw);
+    }
+
+    QByteArray raw;
+    if ((it = parameters.constFind(key + '*')) != parameters.constEnd()) {
+        // No continuation, but language/charset is present
+        raw = *it;
+    } else if (parameters.constFind(key + "*0*") != parameters.constEnd()) {
+        // Both continuation *and* the lang/charset extension are in there
+        int num = 0;
+        // The funny thing is that the other values might or might not end with the trailing star,
+        // at least according to the example in the RFC
+        do {
+            if ((it = parameters.constFind(key + '*' + QByteArray::number(num))) != parameters.constEnd())
+                raw += *it;
+            else if ((it = parameters.constFind(key + '*' + QByteArray::number(num) + '*')) != parameters.constEnd())
+                raw += *it;
+            ++num;
+        } while (it != parameters.constEnd());
+    }
+
+    // Process 2231-style language/charset continuation, if present
+    int pos1 = raw.indexOf('\'', 0);
+    int pos2 = raw.indexOf('\'', qMax(1, pos1 + 1));
+    if (pos1 != -1 && pos2 != -1) {
+        return decodeByteArray(translatePercentToBin(raw.mid(pos2 + 1)), raw.left(pos1));
+    }
+
+    // Fallback: it could be empty, or otherwise malformed. Just treat it as UTF-8 for compatibility
+    return QString::fromUtf8(raw);
+}
+
+/** @short Produce a parameter for a MIME message header */
+QByteArray encodeRfc2231Parameter(const QByteArray &key, const QString &value)
+{
+    if (value.isEmpty())
+        return key + "=\"\"";
+
+    bool safeAscii = true;
+
+    // Find "dangerous" characters
+    for (int i = 0; i < value.size(); ++i) {
+        if (rfc2311NeedsEscaping(value[i].unicode())) {
+            safeAscii = false;
+            break;
+        }
+    }
+
+    if (safeAscii)
+        return key + '=' + value.toUtf8();
+
+    QByteArray res = key + "*=\"utf-8''";
+    QByteArray encoded = value.toUtf8();
+    for (int i = 0; i < encoded.size(); ++i) {
+        char unicode = encoded[i];
+        if (rfc2311NeedsEscaping(unicode))
+            res += toHexChar(unicode, '%');
+        else
+            res += unicode;
+    }
+    return res + '"';
 }
 
 }

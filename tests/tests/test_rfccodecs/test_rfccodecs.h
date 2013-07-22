@@ -31,14 +31,18 @@ class RFCCodecsTest : public QObject
 private Q_SLOTS:
   /** @short Test for KIMAP::encodeImapFolderName() */
   void testIMAPEncoding();
-  /** @short Tests for proper IMAP quoting and auote escaping */
-  void testQuotes();
   /** @short Test the RFC2047 decoder */
   void testDecodeRFC2047String();
   void testDecodeRFC2047String_data();
 
   void testEncodeRFC2047StringAsciiPrefix();
   void testEncodeRFC2047StringAsciiPrefix_data();
+
+  void testRfc2231Decoding();
+  void testRfc2231Decoding_data();
+
+  void testRfc2231Encoding();
+  void testRfc2231Encoding_data();
 };
 
 #endif

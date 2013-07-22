@@ -37,7 +37,7 @@
 namespace Gui
 {
 
-MsgListView::MsgListView(QWidget *parent): QTreeView(parent)
+MsgListView::MsgListView(QWidget *parent): QTreeView(parent), m_autoActivateAfterKeyNavigation(true), m_autoResizeSections(true)
 {
     connect(header(), SIGNAL(geometriesChanged()), this, SLOT(slotFixSize()));
     connect(this, SIGNAL(expanded(QModelIndex)), this, SLOT(slotExpandWholeSubtree(QModelIndex)));
@@ -93,7 +93,7 @@ void MsgListView::keyReleaseEvent(QKeyEvent *ke)
 
 void MsgListView::slotCurrentActivated()
 {
-    if (currentIndex().isValid())
+    if (currentIndex().isValid() && m_autoActivateAfterKeyNavigation)
         emit activated(currentIndex());
 }
 
@@ -141,7 +141,7 @@ void MsgListView::startDrag(Qt::DropActions supportedActions)
     Q_FOREACH(const QModelIndex &index, selectedIndexes()) {
         if (!(model()->flags(index) & Qt::ItemIsDragEnabled))
             continue;
-        if (index.column() == 0)
+        if (index.column() == Imap::Mailbox::MsgListModel::SUBJECT)
             baseIndexes << index;
     }
 
@@ -155,11 +155,14 @@ void MsgListView::startDrag(Qt::DropActions supportedActions)
         int maxWidth = qMax(400, screenWidth / 4);
         QSize size(maxWidth, 0);
 
+        // Show a "+ X more items" text after so many entries
+        const int maxItems = 20;
+
         QStyleOptionViewItem opt;
         opt.initFrom(this);
         opt.rect.setWidth(maxWidth);
         opt.rect.setHeight(itemDelegate()->sizeHint(opt, baseIndexes.at(0)).height());
-        size.setHeight(baseIndexes.size() * opt.rect.height());
+        size.setHeight(qMin(maxItems + 1, baseIndexes.size()) * opt.rect.height());
         // State_Selected provides for nice background of the items
         opt.state |= QStyle::State_Selected;
 
@@ -170,6 +173,12 @@ void MsgListView::startDrag(Qt::DropActions supportedActions)
 
         for (int i = 0; i < baseIndexes.size(); ++i) {
             opt.rect.moveTop(i * opt.rect.height());
+            if (i == maxItems) {
+                p.fillRect(opt.rect, palette().color(QPalette::Disabled, QPalette::Highlight));
+                p.setBrush(palette().color(QPalette::Disabled, QPalette::HighlightedText));
+                p.drawText(opt.rect, Qt::AlignRight, tr("+ %n additional item(s)", 0, baseIndexes.size() - maxItems));
+                break;
+            }
             itemDelegate()->paint(&p, opt, baseIndexes.at(i));
         }
 
@@ -216,28 +225,35 @@ void MsgListView::startDrag(Qt::DropActions supportedActions)
 
 void MsgListView::slotFixSize()
 {
+    if (!m_autoResizeSections)
+        return;
+
     if (header()->visualIndex(Imap::Mailbox::MsgListModel::SEEN) == -1) {
         // calling setResizeMode() would assert()
         return;
     }
-    header()->setStretchLastSection(false);
 
+    header()->setStretchLastSection(false);
     for (int i = 0; i < Imap::Mailbox::MsgListModel::COLUMN_COUNT; ++i) {
-        QHeaderView::ResizeMode resizeMode = QHeaderView::Interactive;
-        switch (i) {
-        case Imap::Mailbox::MsgListModel::SUBJECT:
-            resizeMode = QHeaderView::Stretch;
-            break;
-        case Imap::Mailbox::MsgListModel::SEEN:
-            resizeMode = QHeaderView::Fixed;
-            break;
-        }
-        setColumnWidth(i, sizeHintForColumn(i));
+        QHeaderView::ResizeMode resizeMode = resizeModeForColumn(i);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
         header()->setSectionResizeMode(i, resizeMode);
 #else
         header()->setResizeMode(i, resizeMode);
 #endif
+        setColumnWidth(i, sizeHintForColumn(i));
+    }
+}
+
+QHeaderView::ResizeMode MsgListView::resizeModeForColumn(const int column) const
+{
+    switch (column) {
+    case Imap::Mailbox::MsgListModel::SUBJECT:
+        return QHeaderView::Stretch;
+    case Imap::Mailbox::MsgListModel::SEEN:
+        return QHeaderView::Fixed;
+    default:
+        return QHeaderView::Interactive;
     }
 }
 
@@ -315,6 +331,15 @@ void MsgListView::slotHeaderSectionVisibilityToggled(int section)
     }
 }
 
+void MsgListView::updateActionsAfterRestoredState()
+{
+    m_autoResizeSections = false;
+    QList<QAction *> actions = header()->actions();
+    for (int i = 0; i < actions.size(); ++i) {
+        actions[i]->setChecked(!header()->isSectionHidden(i));
+    }
+}
+
 /** @short Overridden from QTreeView::setModel
 
 The whole point is that we have to listen for sortingPreferenceChanged to update your header view when sorting is requested
@@ -354,6 +379,11 @@ Imap::Mailbox::PrettyMsgListModel *MsgListView::findPrettyMsgListModel(QAbstract
             model = proxy->sourceModel();
     }
     return 0;
+}
+
+void MsgListView::setAutoActivateAfterKeyNavigation(bool enabled)
+{
+    m_autoActivateAfterKeyNavigation = enabled;
 }
 
 }

@@ -22,6 +22,7 @@
 #ifndef MSGLISTVIEW_H
 #define MSGLISTVIEW_H
 
+#include <QHeaderView>
 #include <QTreeView>
 
 class QSignalMapper;
@@ -48,10 +49,13 @@ public:
     explicit MsgListView(QWidget *parent=0);
     virtual ~MsgListView() {}
     void setModel(QAbstractItemModel *model);
+    void setAutoActivateAfterKeyNavigation(bool enabled);
+    void updateActionsAfterRestoredState();
+    virtual int sizeHintForColumn(int column) const;
+    QHeaderView::ResizeMode resizeModeForColumn(const int column) const;
 protected:
     void keyPressEvent(QKeyEvent *ke);
     void keyReleaseEvent(QKeyEvent *ke);
-    virtual int sizeHintForColumn(int column) const;
     virtual void startDrag(Qt::DropActions supportedActions);
 private slots:
     void slotFixSize();
@@ -70,6 +74,8 @@ private:
 
     QSignalMapper *headerFieldsMapper;
     QTimer *m_naviActivationTimer;
+    bool m_autoActivateAfterKeyNavigation;
+    bool m_autoResizeSections;
 };
 
 }

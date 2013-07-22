@@ -30,16 +30,21 @@
 #include <QWebFrame>
 
 #include "SimplePartWidget.h"
+#include "Gui/MessageView.h" // so that the compiler knows that it's a QObject
 #include "Gui/Util.h"
+#include "Imap/Encoders.h"
 #include "Imap/Model/ItemRoles.h"
 #include "Imap/Model/MailboxTree.h"
+#include "Imap/Model/Model.h"
 #include "Imap/Network/FileDownloadManager.h"
 
 namespace Gui
 {
 
-SimplePartWidget::SimplePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &partIndex):
-    EmbeddedWebView(parent, manager), flowedFormat(Composer::Util::FORMAT_PLAIN)
+SimplePartWidget::SimplePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager,
+                                   const QModelIndex &partIndex, MessageView *messageView):
+    EmbeddedWebView(parent, manager), m_partIndex(partIndex), m_netAccessManager(manager),
+    flowedFormat(Composer::Util::FORMAT_PLAIN)
 {
     Q_ASSERT(partIndex.isValid());
     QUrl url;
@@ -52,12 +57,13 @@ SimplePartWidget::SimplePartWidget(QWidget *parent, Imap::Network::MsgPartNetAcc
         flowedFormat = Composer::Util::FORMAT_FLOWED;
     load(url);
 
-    fileDownloadManager = new Imap::Network::FileDownloadManager(this, manager, partIndex);
-    connect(fileDownloadManager, SIGNAL(fileNameRequested(QString *)), this, SLOT(slotFileNameRequested(QString *)));
+    m_savePart = new QAction(tr("Save this message part..."), this);
+    connect(m_savePart, SIGNAL(triggered()), this, SLOT(slotDownloadPart()));
+    this->addAction(m_savePart);
 
-    saveAction = new QAction(tr("Save..."), this);
-    connect(saveAction, SIGNAL(triggered()), fileDownloadManager, SLOT(downloadMessage()));
-    this->addAction(saveAction);
+    m_saveMessage = new QAction(tr("Save whole message..."), this);
+    connect(m_saveMessage, SIGNAL(triggered()), this, SLOT(slotDownloadMessage()));
+    this->addAction(m_saveMessage);
 
     m_findAction = new QAction(tr("Search..."), this);
     m_findAction->setShortcut(tr("Ctrl+F"));
@@ -65,11 +71,25 @@ SimplePartWidget::SimplePartWidget(QWidget *parent, Imap::Network::MsgPartNetAcc
     addAction(m_findAction);
 
     setContextMenuPolicy(Qt::CustomContextMenu);
+
+    connect(this, SIGNAL(customContextMenuRequested(QPoint)), messageView, SLOT(partContextMenuRequested(QPoint)));
+    connect(this, SIGNAL(searchDialogRequested()), messageView, SLOT(triggerSearchDialog()));
+    // The targets expect the sender() of the signal to be a SimplePartWidget, not a QWebPage,
+    // which means we have to do this indirection
+    connect(page(), SIGNAL(linkHovered(QString,QString,QString)), this, SIGNAL(linkHovered(QString,QString,QString)));
+    connect(this, SIGNAL(linkHovered(QString,QString,QString)),
+            messageView, SLOT(partLinkHovered(QString,QString,QString)));
+
+    installEventFilter(messageView);
 }
 
 void SimplePartWidget::slotMarkupPlainText() {
     // NOTICE "single shot", we get a recursion otherwise!
     disconnect(this, SIGNAL(loadFinished(bool)), this, SLOT(slotMarkupPlainText()));
+
+    // If there's no data, don't try to "fix it up"
+    if (!m_partIndex.isValid() || !m_partIndex.data(Imap::Mailbox::RoleIsFetched).toBool())
+        return;
 
     static const QString defaultStyle = QString::fromUtf8(
         "pre{word-wrap: break-word; white-space: pre-wrap;}"
@@ -137,7 +157,11 @@ void SimplePartWidget::slotMarkupPlainText() {
     QString htmlHeader("<html><head><style type=\"text/css\"><!--" + textColors + fontSpecification + stylesheet + "--></style></head><body><pre>");
     static QString htmlFooter("\n</pre></body></html>");
 
-    QString markup = Composer::Util::plainTextToHtml(page()->mainFrame()->toPlainText(), flowedFormat);
+    // We cannot rely on the QWebFrame's toPlainText because of https://bugs.kde.org/show_bug.cgi?id=321160
+    QString markup = Composer::Util::plainTextToHtml(
+                Imap::decodeByteArray(m_partIndex.data(Imap::Mailbox::RolePartData).toByteArray(),
+                                      m_partIndex.data(Imap::Mailbox::RolePartCharset).toString()),
+                flowedFormat);
 
     // and finally set the marked up page.
     page()->mainFrame()->setHtml(htmlHeader + markup + htmlFooter);
@@ -173,21 +197,38 @@ void SimplePartWidget::reloadContents()
 
 QList<QAction *> SimplePartWidget::contextMenuSpecificActions() const
 {
-    return QList<QAction*>() << saveAction << m_findAction;
+    return QList<QAction*>() << m_savePart << m_saveMessage << m_findAction;
 }
 
-/** @short Connect various signals which require a certain reaction from the rest of the GUI */
-void SimplePartWidget::connectGuiInteractionEvents(QObject *guiInteractionTarget)
+void SimplePartWidget::slotDownloadPart()
 {
-    connect(this, SIGNAL(customContextMenuRequested(QPoint)), guiInteractionTarget, SLOT(partContextMenuRequested(QPoint)));
+    Imap::Network::FileDownloadManager *manager = new Imap::Network::FileDownloadManager(this, m_netAccessManager, m_partIndex);
+    connect(manager, SIGNAL(fileNameRequested(QString *)), this, SLOT(slotFileNameRequested(QString *)));
+    connect(manager, SIGNAL(transferError(QString)), this, SLOT(slotTransferError(QString)));
+    connect(manager, SIGNAL(transferError(QString)), manager, SLOT(deleteLater()));
+    connect(manager, SIGNAL(succeeded()), manager, SLOT(deleteLater()));
+    manager->downloadPart();
+}
 
-    // The targets expect the sender() of the signal to be a SimplePartWidget, not a QWebPage,
-    // which means we have to do this indirection
-    connect(page(), SIGNAL(linkHovered(QString,QString,QString)), this, SIGNAL(linkHovered(QString,QString,QString)));
-    connect(this, SIGNAL(linkHovered(QString,QString,QString)),
-            guiInteractionTarget, SLOT(partLinkHovered(QString,QString,QString)));
+void SimplePartWidget::slotDownloadMessage()
+{
+    QModelIndex index;
+    if (m_partIndex.isValid()) {
+        const Imap::Mailbox::Model *model = 0;
+        Imap::Mailbox::TreeItem *item = Imap::Mailbox::Model::realTreeItem(m_partIndex, &model);
+        Q_ASSERT(model);
+        Q_ASSERT(item);
+        Imap::Mailbox::TreeItemMessage *messagePtr = dynamic_cast<Imap::Mailbox::TreeItemPart*>(item)->message();
+        Q_ASSERT(messagePtr);
+        index = messagePtr->toIndex(const_cast<Imap::Mailbox::Model*>(model));
+    }
 
-    connect(this, SIGNAL(searchDialogRequested()), guiInteractionTarget, SLOT(triggerSearchDialog()));
+    Imap::Network::FileDownloadManager *manager = new Imap::Network::FileDownloadManager(this, m_netAccessManager, index);
+    connect(manager, SIGNAL(fileNameRequested(QString *)), this, SLOT(slotFileNameRequested(QString *)));
+    connect(manager, SIGNAL(transferError(QString)), this, SLOT(slotTransferError(QString)));
+    connect(manager, SIGNAL(transferError(QString)), manager, SLOT(deleteLater()));
+    connect(manager, SIGNAL(succeeded()), manager, SLOT(deleteLater()));
+    manager->downloadMessage();
 }
 
 }

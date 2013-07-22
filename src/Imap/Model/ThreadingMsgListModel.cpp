@@ -24,12 +24,12 @@
 #include <algorithm>
 #include <QBuffer>
 #include <QDebug>
+#include "Imap/Tasks/SortTask.h"
+#include "Imap/Tasks/ThreadTask.h"
 #include "ItemRoles.h"
 #include "MailboxTree.h"
 #include "MsgListModel.h"
 #include "QAIM_reset.h"
-#include "SortTask.h"
-#include "ThreadTask.h"
 
 #if 0
 namespace
@@ -62,6 +62,10 @@ ThreadingMsgListModel::ThreadingMsgListModel(QObject *parent):
     m_shallBeThreading(false), m_sortTask(0), m_sortReverse(false), m_currentSortingCriteria(SORT_NONE),
     m_searchValidity(RESULT_INVALIDATED)
 {
+    m_delayedPrune = new QTimer(this);
+    m_delayedPrune->setSingleShot(true);
+    m_delayedPrune->setInterval(0);
+    connect(m_delayedPrune, SIGNAL(timeout()), this, SLOT(delayedPrune()));
 }
 
 void ThreadingMsgListModel::setSourceModel(QAbstractItemModel *sourceModel)
@@ -314,8 +318,8 @@ Qt::ItemFlags ThreadingMsgListModel::flags(const QModelIndex &index) const
 
     QHash<uint,ThreadNodeInfo>::const_iterator it = threading.constFind(index.internalId());
     Q_ASSERT(it != threading.constEnd());
-    if (it->ptr)
-        return QAbstractProxyModel::flags(index);
+    if (it->ptr && it->uid)
+        return Qt::ItemIsSelectable | Qt::ItemIsDragEnabled | Qt::ItemIsEnabled;
 
     return Qt::NoItemFlags;
 
@@ -343,20 +347,21 @@ void ThreadingMsgListModel::handleRowsAboutToBeRemoved(const QModelIndex &parent
         it->uid = 0;
         it->ptr = 0;
     }
-    emit layoutAboutToBeChanged();
-    updatePersistentIndexesPhase1();
 }
 
 void ThreadingMsgListModel::handleRowsRemoved(const QModelIndex &parent, int start, int end)
 {
     Q_ASSERT(!parent.isValid());
-
     Q_UNUSED(start);
     Q_UNUSED(end);
+    if (!m_delayedPrune->isActive())
+        m_delayedPrune->start();
+}
 
-    // It looks like this simplified approach won't really fly when model starts to issue interleaved rowsRemoved signals,
-    // as we'll just remove everything upon first rowsRemoved.  I'll just hope that it doesn't matter (much).
-
+void ThreadingMsgListModel::delayedPrune()
+{
+    emit layoutAboutToBeChanged();
+    updatePersistentIndexesPhase1();
     pruneTree();
     updatePersistentIndexesPhase2();
     emit layoutChanged();
@@ -1182,11 +1187,13 @@ bool ThreadingMsgListModel::threadContainsUnreadMessages(const uint root) const
         uint current = queue.takeFirst();
         QHash<uint,ThreadNodeInfo>::const_iterator it = threading.constFind(current);
         Q_ASSERT(it != threading.constEnd());
-        Q_ASSERT(it->ptr);
-        TreeItemMessage *message = dynamic_cast<TreeItemMessage *>(it->ptr);
-        Q_ASSERT(message);
-        if (! message->isMarkedAsRead())
-            return true;
+        if (it->ptr) {
+            // Because of the delayed delete via pruneTree, we can hit a null pointer here
+            TreeItemMessage *message = dynamic_cast<TreeItemMessage *>(it->ptr);
+            Q_ASSERT(message);
+            if (! message->isMarkedAsRead())
+                return true;
+        }
         queue.append(it->children);
     }
     return false;
@@ -1391,14 +1398,15 @@ void ThreadingMsgListModel::applySort()
     }
 
     // Now remove everything which is no longer reachable from the root of the thread mapping
-    newlyUnreachable -= threading[0].children.toSet();
-    while (!newlyUnreachable.isEmpty()) {
-        QSet<uint>::iterator it = newlyUnreachable.begin();
-        uint item = *it;
-        newlyUnreachable.erase(it);
-        QHash<uint,ThreadNodeInfo>::iterator threadingIt = threading.find(item);
+    // Start working on the top-level orphans
+    Q_FOREACH(const uint uid, threading[0].children) {
+        newlyUnreachable.remove(uid);
+    }
+    std::vector<uint> queue(newlyUnreachable.constBegin(), newlyUnreachable.constEnd());
+    for (std::vector<uint>::size_type i = 0; i < queue.size(); ++i) {
+        QHash<uint,ThreadNodeInfo>::iterator threadingIt = threading.find(queue[i]);
         Q_ASSERT(threadingIt != threading.end());
-        newlyUnreachable += threadingIt->children.toSet();
+        queue.insert(queue.end(), threadingIt->children.constBegin(), threadingIt->children.constEnd());
         threading.erase(threadingIt);
     }
 

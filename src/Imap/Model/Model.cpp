@@ -824,6 +824,8 @@ void Model::askForMessagesInMailbox(TreeItemMsgList *item)
         }
         endInsertRows();
         item->m_fetchStatus = TreeItem::DONE; // required for FETCH processing later on
+        // The list of messages was satisfied from cache. Do the same for the message counts, if applicable
+        item->recalcVariousMessageCounts(this);
     }
 
     if (networkPolicy() != NETWORK_OFFLINE) {
@@ -1173,6 +1175,19 @@ ImapTask *Model::setMessageFlags(const QModelIndexList &messages, const QString 
 void Model::markMessagesDeleted(const QModelIndexList &messages, const FlagsOperation marked)
 {
     this->setMessageFlags(messages, "\\Deleted", marked);
+}
+
+void Model::markMailboxAsRead(const QModelIndex &mailbox)
+{
+    if (!mailbox.isValid())
+        return;
+
+    QModelIndex index;
+    realTreeItem(mailbox, 0, &index);
+    Q_ASSERT(index.isValid());
+    Q_ASSERT(index.model() == this);
+    Q_ASSERT(dynamic_cast<TreeItemMailbox*>(static_cast<TreeItem*>(index.internalPointer())));
+    m_taskFactory->createUpdateFlagsOfAllMessagesTask(this, index, Imap::Mailbox::FLAG_ADD_SILENT, QLatin1String("\\Seen"));
 }
 
 void Model::markMessagesRead(const QModelIndexList &messages, const FlagsOperation marked)

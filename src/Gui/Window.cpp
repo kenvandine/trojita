@@ -22,9 +22,9 @@
 
 #include <QAuthenticator>
 #include <QDesktopServices>
+#include <QDesktopWidget>
 #if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
 #  include <QStandardPaths>
-#  include <QUrlQuery>
 #endif
 #include <QDir>
 #include <QDockWidget>
@@ -36,12 +36,15 @@
 #include <QProgressBar>
 #include <QSplitter>
 #include <QSslError>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QTextDocument>
 #include <QToolBar>
 #include <QToolButton>
 #include <QUrl>
 
+#include "AbookAddressbook/AbookAddressbook.h"
+#include "AbookAddressbook/be-contacts.h"
 #include "Common/PortNumbers.h"
 #include "Common/SettingsNames.h"
 #include "Composer/SenderIdentitiesModel.h"
@@ -59,7 +62,6 @@
 #include "Imap/Network/FileDownloadManager.h"
 #include "MSA/Sendmail.h"
 #include "MSA/SMTP.h"
-#include "AbookAddressbook.h"
 #include "CompleteMessageWidget.h"
 #include "ComposeWidget.h"
 #include "IconLoader.h"
@@ -68,6 +70,7 @@
 #include "MessageView.h"
 #include "MessageSourceWidget.h"
 #include "MsgListView.h"
+#include "OnePanelAtTimeWidget.h"
 #include "PasswordDialog.h"
 #include "ProtocolLoggerWidget.h"
 #include "SettingsDialog.h"
@@ -91,7 +94,14 @@ Q_DECLARE_METATYPE(QList<QSslError>)
 namespace Gui
 {
 
-MainWindow::MainWindow(): QMainWindow(), model(0), m_actionSortNone(0), m_ignoreStoredPassword(false)
+enum {
+    MINIMUM_WIDTH_NORMAL = 800,
+    MINIMUM_WIDTH_WIDE = 1250
+};
+
+MainWindow::MainWindow(): QMainWindow(), model(0),
+    m_mainHSplitter(0), m_mainVSplitter(0), m_mainStack(0), m_layoutMode(LAYOUT_COMPACT), m_skipSavingOfUI(true),
+    m_actionSortNone(0), m_ignoreStoredPassword(false), m_trayIcon(0)
 {
     qRegisterMetaType<QList<QSslCertificate> >();
     qRegisterMetaType<QList<QSslError> >();
@@ -114,16 +124,44 @@ MainWindow::MainWindow(): QMainWindow(), model(0), m_actionSortNone(0), m_ignore
     }
 
 
+    // TODO write more addressbook backends and make this configurable
+    m_addressBook = new AbookAddressbook();
+
     setupModels();
     createActions();
     createMenus();
+    slotToggleSysTray();
 
     // Please note that Qt 4.6.1 really requires passing the method signature this way, *not* using the SLOT() macro
     QDesktopServices::setUrlHandler(QLatin1String("mailto"), this, "slotComposeMailUrl");
+    QDesktopServices::setUrlHandler(QLatin1String("x-trojita-manage-contact"), this, "slotManageContact");
 
     slotUpdateWindowTitle();
 
     recoverDrafts();
+
+    if (m_actionLayoutWide->isEnabled() &&
+            QSettings().value(Common::SettingsNames::guiMainWindowLayout) == Common::SettingsNames::guiMainWindowLayoutWide) {
+        m_actionLayoutWide->trigger();
+    } else if (QSettings().value(Common::SettingsNames::guiMainWindowLayout) == Common::SettingsNames::guiMainWindowLayoutOneAtTime) {
+        m_actionLayoutOneAtTime->trigger();
+    } else {
+        m_actionLayoutCompact->trigger();
+    }
+
+    // Don't listen to QDesktopWidget::resized; that is emitted too early (when it gets fired, the screen size has changed, but
+    // the workspace area is still the old one). Instead, listen to workAreaResized which gets emitted at an appropriate time.
+    // The delay is still there to guarantee some smoothing; on jkt's box there are typically three events in a rapid sequence
+    // (some of them most likely due to the fact that at first, the actual desktop gets resized, the plasma panel reacts
+    // to that and only after the panel gets resized, the available size of "the rest" is correct again).
+    // Which is why it makes sense to introduce some delay in there. The 0.5s delay is my best guess and "should work" (especially
+    // because every change bumps the timer anyway, as Thomas pointed out).
+    QTimer *delayedResize = new QTimer(this);
+    delayedResize->setSingleShot(true);
+    delayedResize->setInterval(500);
+    connect(delayedResize, SIGNAL(timeout()), this, SLOT(desktopGeometryChanged()));
+    connect(qApp->desktop(), SIGNAL(workAreaResized(int)), delayedResize, SLOT(start()));
+    m_skipSavingOfUI = false;
 }
 
 void MainWindow::defineActions()
@@ -131,7 +169,7 @@ void MainWindow::defineActions()
     ShortcutHandler *shortcutHandler = ShortcutHandler::instance();
     shortcutHandler->defineAction(QLatin1String("action_application_exit"), QLatin1String("application-exit"), tr("E&xit"), QKeySequence::Quit);
     shortcutHandler->defineAction(QLatin1String("action_compose_mail"), QLatin1String("document-edit"), tr("&New Message..."), QKeySequence::New);
-    shortcutHandler->defineAction(QLatin1String("action_compose_draft"), QLatin1String("document-open-recent"), tr("&Edit Draft..."), QKeySequence::New);
+    shortcutHandler->defineAction(QLatin1String("action_compose_draft"), QLatin1String("document-open-recent"), tr("&Edit Draft..."));
     shortcutHandler->defineAction(QLatin1String("action_show_menubar"), QLatin1String("view-list-text"), tr("Show Main Menu &Bar"), tr("Ctrl+M"));
     shortcutHandler->defineAction(QLatin1String("action_expunge"), QLatin1String("trash-empty"), tr("Exp&unge"), tr("Ctrl+E"));
     shortcutHandler->defineAction(QLatin1String("action_mark_as_read"), QLatin1String("mail-mark-read"), tr("Mark as &Read"), QLatin1String("M"));
@@ -146,6 +184,7 @@ void MainWindow::defineActions()
     shortcutHandler->defineAction(QLatin1String("action_reply_all"), QLatin1String("mail-reply-all"), tr("Reply to &All"), tr("Ctrl+Alt+Shift+R"));
     shortcutHandler->defineAction(QLatin1String("action_reply_list"), QLatin1String("mail-reply-list"), tr("Reply to &Mailing List"), tr("Ctrl+L"));
     shortcutHandler->defineAction(QLatin1String("action_reply_guess"), QString(), tr("Reply by &Guess"), tr("Ctrl+R"));
+    shortcutHandler->defineAction(QLatin1String("action_contact_editor"), QLatin1String("contact-unknown"), tr("Address Book..."));
 }
 
 void MainWindow::createActions()
@@ -172,6 +211,7 @@ void MainWindow::createActions()
     // new: Ctrl+N
 
     m_mainToolbar = addToolBar(tr("Navigation"));
+    m_mainToolbar->setObjectName(QLatin1String("mainToolbar"));
 
     reloadMboxList = new QAction(style()->standardIcon(QStyle::SP_ArrowRight), tr("&Update List of Child Mailboxes"), this);
     connect(reloadMboxList, SIGNAL(triggered()), this, SLOT(slotReloadMboxList()));
@@ -182,7 +222,7 @@ void MainWindow::createActions()
     reloadAllMailboxes = new QAction(tr("&Reload Everything"), this);
     // connect later
 
-    exitAction = ShortcutHandler::instance()->createAction(QLatin1String("action_application_exit"), this, SLOT(close()), this);
+    exitAction = ShortcutHandler::instance()->createAction(QLatin1String("action_application_exit"), qApp, SLOT(quit()), this);
     exitAction->setStatusTip(tr("Exit the application"));
 
     QActionGroup *netPolicyGroup = new QActionGroup(this);
@@ -236,6 +276,10 @@ void MainWindow::createActions()
     configSettings = new QAction(loadIcon(QLatin1String("configure")),  tr("&Settings..."), this);
     connect(configSettings, SIGNAL(triggered()), this, SLOT(slotShowSettings()));
 
+    m_oneAtTimeGoBack = new QAction(loadIcon(QLatin1String("go-previous")), tr("Navigate Back"), this);
+    m_oneAtTimeGoBack->setShortcut(QKeySequence::Back);
+    m_oneAtTimeGoBack->setEnabled(false);
+
     composeMail = ShortcutHandler::instance()->createAction("action_compose_mail", this, SLOT(slotComposeMail()), this);
     m_editDraft = ShortcutHandler::instance()->createAction("action_compose_draft", this, SLOT(slotEditDraft()), this);
 
@@ -275,6 +319,9 @@ void MainWindow::createActions()
     //: "mailbox" as a "folder of messages", not as a "mail account"
     createTopMailbox = new QAction(tr("Create &New Mailbox..."), this);
     connect(createTopMailbox, SIGNAL(triggered()), this, SLOT(slotCreateTopMailbox()));
+
+    m_actionMarkMailboxAsRead = new QAction(tr("&Mark Mailbox as Read"), this);
+    connect(m_actionMarkMailboxAsRead, SIGNAL(triggered()), this, SLOT(slotMarkCurrentMailboxRead()));
 
     //: "mailbox" as a "folder of messages", not as a "mail account"
     deleteCurrentMailbox = new QAction(tr("&Remove Mailbox"), this);
@@ -358,11 +405,10 @@ void MainWindow::createActions()
     m_actionLayoutWide = new QAction(tr("&Wide"), layoutGroup);
     m_actionLayoutWide->setCheckable(true);
     connect(m_actionLayoutWide, SIGNAL(triggered()), this, SLOT(slotLayoutWide()));
+    m_actionLayoutOneAtTime = new QAction(tr("&One At Time"), layoutGroup);
+    m_actionLayoutOneAtTime->setCheckable(true);
+    connect(m_actionLayoutOneAtTime, SIGNAL(triggered()), this, SLOT(slotLayoutOneAtTime()));
 
-    if (QSettings().value(Common::SettingsNames::guiMainWindowLayout) == Common::SettingsNames::guiMainWindowLayoutWide) {
-        m_actionLayoutWide->setChecked(true);
-        slotLayoutWide();
-    }
 
     m_actionShowOnlySubscribed = new QAction(tr("Show Only S&ubscribed Folders"), this);
     m_actionShowOnlySubscribed->setCheckable(true);
@@ -422,6 +468,7 @@ void MainWindow::createMenus()
 {
     QMenu *imapMenu = menuBar()->addMenu(tr("&IMAP"));
     imapMenu->addMenu(m_composeMenu);
+    imapMenu->addAction(ShortcutHandler::instance()->createAction(QLatin1String("action_contact_editor"), this, SLOT(invokeContactEditor()), this));
     imapMenu->addAction(m_replyGuess);
     imapMenu->addAction(m_replyPrivate);
     imapMenu->addAction(m_replyAll);
@@ -451,6 +498,7 @@ void MainWindow::createMenus()
     QMenu *layoutMenu = viewMenu->addMenu(tr("&Layout"));
     layoutMenu->addAction(m_actionLayoutCompact);
     layoutMenu->addAction(m_actionLayoutWide);
+    layoutMenu->addAction(m_actionLayoutOneAtTime);
     viewMenu->addSeparator();
     viewMenu->addAction(m_previousMessage);
     viewMenu->addAction(m_nextMessage);
@@ -508,27 +556,15 @@ void MainWindow::createWidgets()
     connect(m_messageWidget->messageView, SIGNAL(messageChanged()), this, SLOT(scrollMessageUp()));
     connect(m_messageWidget->messageView, SIGNAL(messageChanged()), this, SLOT(slotUpdateMessageActions()));
     connect(m_messageWidget->messageView, SIGNAL(linkHovered(QString)), this, SLOT(slotShowLinkTarget(QString)));
+    connect(m_messageWidget->messageView, SIGNAL(addressDetailsRequested(QString,QStringList&)),
+            this, SLOT(fillMatchingAbookEntries(QString,QStringList&)));
     if (QSettings().value(Common::SettingsNames::appLoadHomepage, QVariant(true)).toBool() &&
         !QSettings().value(Common::SettingsNames::imapStartOffline).toBool()) {
         m_messageWidget->messageView->setHomepageUrl(QUrl(QString::fromUtf8("http://welcome.trojita.flaska.net/%1").arg(QCoreApplication::applicationVersion())));
     }
 
-    m_mainHSplitter = new QSplitter();
-    m_mainVSplitter = new QSplitter();
-    m_mainVSplitter->setOrientation(Qt::Vertical);
-    m_mainVSplitter->addWidget(msgListWidget);
-    m_mainVSplitter->addWidget(m_messageWidget);
-    m_mainHSplitter->addWidget(mboxTree);
-    m_mainHSplitter->addWidget(m_mainVSplitter);
-
-    // The mboxTree shall not expand...
-    m_mainHSplitter->setStretchFactor(0, 0);
-    // ...while the msgListTree shall consume all the remaining space
-    m_mainHSplitter->setStretchFactor(1, 1);
-
-    setCentralWidget(m_mainHSplitter);
-
     allDock = new QDockWidget("Everything", this);
+    allDock->setObjectName(QLatin1String("allDock"));
     allTree = new QTreeView(allDock);
     allDock->hide();
     allTree->setUniformRowHeights(true);
@@ -536,6 +572,7 @@ void MainWindow::createWidgets()
     allDock->setWidget(allTree);
     addDockWidget(Qt::LeftDockWidgetArea, allDock);
     taskDock = new QDockWidget("IMAP Tasks", this);
+    taskDock->setObjectName("taskDock");
     taskTree = new QTreeView(taskDock);
     taskDock->hide();
     taskTree->setHeaderHidden(true);
@@ -543,6 +580,7 @@ void MainWindow::createWidgets()
     addDockWidget(Qt::LeftDockWidgetArea, taskDock);
 
     imapLoggerDock = new QDockWidget(tr("IMAP Protocol"), this);
+    imapLoggerDock->setObjectName(QLatin1String("imapLoggerDock"));
     imapLogger = new ProtocolLoggerWidget(imapLoggerDock);
     imapLoggerDock->hide();
     imapLoggerDock->setWidget(imapLogger);
@@ -573,7 +611,7 @@ void MainWindow::setupModels()
         factory.reset(new Imap::Mailbox::SslSocketFactory(
                           s.value(SettingsNames::imapHostKey).toString(),
                           s.value(SettingsNames::imapPortKey, QString::number(Common::PORT_IMAPS)).toUInt()));
-    } else {
+    } else if (s.value(SettingsNames::imapMethodKey).toString() == SettingsNames::methodProcess) {
         QStringList args = s.value(SettingsNames::imapProcessKey).toString().split(QLatin1Char(' '));
         if (args.isEmpty()) {
             // it's going to fail anyway
@@ -581,6 +619,8 @@ void MainWindow::setupModels()
         }
         QString appName = args.takeFirst();
         factory.reset(new Imap::Mailbox::ProcessSocketFactory(appName, args));
+    } else {
+        factory.reset(new Imap::Mailbox::FakeSocketFactory(Imap::CONN_STATE_LOGOUT));
     }
 
 #if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
@@ -709,10 +749,119 @@ void MainWindow::setupModels()
     connect(model->taskModel(), SIGNAL(rowsMoved(QModelIndex,int,int,QModelIndex,int)), taskTree, SLOT(expandAll()));
 
     busyParsersIndicator->setImapModel(model);
-
-    // TODO write more addressbook backends and make this configurable
-    m_addressBook = new AbookAddressbook();
 }
+
+void MainWindow::createSysTray()
+{
+    if (m_trayIcon)
+        return;
+
+    m_trayIcon = new QSystemTrayIcon(this);
+    handleTrayIconChange();
+
+    QAction* quitAction = new QAction(tr("&Quit"), m_trayIcon);
+    connect(quitAction, SIGNAL(triggered()), qApp, SLOT(quit()));
+
+    QMenu *trayIconMenu = new QMenu(this);
+    trayIconMenu->addAction(quitAction);
+    m_trayIcon->setContextMenu(trayIconMenu);
+
+    // QMenu cannot be a child of QSystemTrayIcon, and we don't want the QMenu in MainWindow scope.
+    connect(m_trayIcon, SIGNAL(destroyed()), trayIconMenu, SLOT(deleteLater()));
+
+    connect(m_trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
+            this, SLOT(slotIconActivated(QSystemTrayIcon::ActivationReason)));
+    connect(model, SIGNAL(messageCountPossiblyChanged(QModelIndex)), this, SLOT(handleTrayIconChange()));
+    m_trayIcon->setVisible(true);
+    m_trayIcon->show();
+}
+
+void MainWindow::removeSysTray()
+{
+    delete m_trayIcon;
+    m_trayIcon = 0;
+}
+
+void MainWindow::slotToggleSysTray()
+{
+    QSettings s;
+    bool showSystray = s.value(Common::SettingsNames::guiShowSystray, QVariant(true)).toBool();
+    if (showSystray && !m_trayIcon) {
+        createSysTray();
+    } else if (!showSystray && m_trayIcon) {
+        removeSysTray();
+    }
+}
+
+void MainWindow::handleTrayIconChange()
+{
+    QModelIndex mailbox = model->index(1, 0, QModelIndex());
+
+    if (mailbox.isValid()) {
+        Q_ASSERT(mailbox.data(Imap::Mailbox::RoleMailboxName).toString() == QLatin1String("INBOX"));
+        QPixmap pixmap = QPixmap(QLatin1String(":/icons/trojita.png"));
+        if (mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toInt() > 0) {
+            QPainter painter(&pixmap);
+            QFont f;
+            f.setPixelSize(pixmap.height() * 0.59 );
+            f.setWeight(QFont::Bold);
+
+            QString text = mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toString();
+            QFontMetrics fm(f);
+            if (mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toUInt() > 666) {
+                // You just have too many messages.
+                text = QString::fromUtf8("🐮");
+                fm = QFontMetrics(f);
+            } else if (fm.width(text) > pixmap.width()) {
+                f.setPixelSize(f.pixelSize() * pixmap.width() / fm.width(text));
+                fm = QFontMetrics(f);
+            }
+            painter.setFont(f);
+
+            QRect boundingRect = fm.tightBoundingRect(text);
+            boundingRect.setWidth(boundingRect.width() + 2);
+            boundingRect.setHeight(boundingRect.height() + 2);
+            boundingRect.moveCenter(QPoint(pixmap.width() / 2, pixmap.height() / 2));
+            boundingRect = boundingRect.intersected(pixmap.rect());
+            painter.setBrush(Qt::white);
+            painter.setPen(Qt::white);
+            painter.setOpacity(0.7);
+            painter.drawRoundedRect(boundingRect, 2.0, 2.0);
+
+            painter.setOpacity(1.0);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(Qt::darkBlue);
+            painter.drawText(boundingRect, Qt::AlignCenter, text);
+            m_trayIcon->setToolTip(trUtf8("Trojitá - %n unread message(s)", 0, mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toInt()));
+            m_trayIcon->setIcon(QIcon(pixmap));
+            return;
+        }
+    }
+    m_trayIcon->setToolTip(trUtf8("Trojitá"));
+    m_trayIcon->setIcon(QIcon(QLatin1String(":/icons/trojita.png")));
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (m_trayIcon && m_trayIcon->isVisible()) {
+        Util::askForSomethingUnlessTold(trUtf8("Trojitá"),
+                                        tr("The application will continue in systray. This can be disabled within the settings."),
+                                        Common::SettingsNames::guiOnSystrayClose, QMessageBox::Ok, this);
+        hide();
+        event->ignore();
+    }
+}
+
+void MainWindow::slotIconActivated(const QSystemTrayIcon::ActivationReason reason)
+{
+    if (reason == QSystemTrayIcon::Trigger) {
+        setVisible(!isVisible());
+        if (isVisible()) {
+            activateWindow();
+            raise();
+        }
+    }
+ }
 
 void MainWindow::msgListClicked(const QModelIndex &index)
 {
@@ -736,7 +885,10 @@ void MainWindow::msgListClicked(const QModelIndex &index)
                                                Imap::Mailbox::FLAG_REMOVE : Imap::Mailbox::FLAG_ADD;
         model->markMessagesRead(QModelIndexList() << translated, flagOp);
     } else {
-        m_messageWidget->messageView->setMessage(index);
+        if (m_messageWidget->isVisible() && !m_messageWidget->size().isEmpty()) {
+            // isVisible() won't work, the splitter manipulates width, not the visibility state
+            m_messageWidget->messageView->setMessage(index);
+        }
         msgListWidget->tree->setCurrentIndex(index);
     }
 }
@@ -756,6 +908,8 @@ void MainWindow::msgListDoubleClicked(const QModelIndex &index)
     Q_ASSERT(realModel == model);
 
     CompleteMessageWidget *widget = new CompleteMessageWidget();
+    connect(widget->messageView, SIGNAL(addressDetailsRequested(QString,QStringList&)),
+            this, SLOT(fillMatchingAbookEntries(QString,QStringList&)));
     widget->messageView->setMessage(index);
     widget->setFocusPolicy(Qt::StrongFocus);
     widget->setWindowTitle(message->envelope(model).subject);
@@ -770,6 +924,7 @@ void MainWindow::showContextMenuMboxTree(const QPoint &position)
     if (mboxTree->indexAt(position).isValid()) {
         actionList.append(createChildMailbox);
         actionList.append(deleteCurrentMailbox);
+        actionList.append(m_actionMarkMailboxAsRead);
         actionList.append(resyncMbox);
         actionList.append(reloadMboxList);
 
@@ -798,6 +953,7 @@ void MainWindow::showContextMenuMsgListTree(const QPoint &position)
         updateMessageFlags(index);
         actionList.append(markAsRead);
         actionList.append(markAsDeleted);
+        actionList.append(m_actionMarkMailboxAsRead);
         actionList.append(saveWholeMessage);
         actionList.append(viewMsgSource);
         actionList.append(viewMsgHeaders);
@@ -907,7 +1063,17 @@ void MainWindow::slotShowSettings()
         nukeModels();
         setupModels();
         connectModelActions();
+        // The systray is still connected to the old model -- got to make sure it's getting updated
+        removeSysTray();
+        slotToggleSysTray();
     }
+    QString method = QSettings().value(Common::SettingsNames::imapMethodKey).toString();
+    if (method != Common::SettingsNames::methodTCP && method != Common::SettingsNames::methodSSL &&
+            method != Common::SettingsNames::methodProcess ) {
+        QMessageBox::critical(this, tr("No Configuration"),
+                              trUtf8("No IMAP account is configured. Trojitá cannot do much without one."));
+    }
+    applySizesAndState();
 }
 
 void MainWindow::authenticationRequested()
@@ -996,22 +1162,23 @@ void MainWindow::requireStartTlsInFuture()
 
 void MainWindow::nukeModels()
 {
+    model->setNetworkOffline();
     m_messageWidget->messageView->setEmpty();
     mboxTree->setModel(0);
     msgListWidget->tree->setModel(0);
     allTree->setModel(0);
     taskTree->setModel(0);
-    prettyMsgListModel->deleteLater();
+    delete prettyMsgListModel;
     prettyMsgListModel = 0;
-    threadingMsgListModel->deleteLater();
+    delete threadingMsgListModel;
     threadingMsgListModel = 0;
-    msgListModel->deleteLater();
+    delete msgListModel;
     msgListModel = 0;
-    mboxModel->deleteLater();
+    delete mboxModel;
     mboxModel = 0;
-    prettyMboxModel->deleteLater();
+    delete prettyMboxModel;
     prettyMboxModel = 0;
-    model->deleteLater();
+    delete model;
     model = 0;
 }
 
@@ -1174,6 +1341,11 @@ void MainWindow::slotExpunge()
     model->expungeMailbox(msgListModel->currentMailbox());
 }
 
+void MainWindow::slotMarkCurrentMailboxRead()
+{
+    model->markMailboxAsRead(mboxTree->currentIndex());
+}
+
 void MainWindow::slotCreateMailboxBelowCurrent()
 {
     createMailboxBelow(mboxTree->currentIndex());
@@ -1246,6 +1418,7 @@ void MainWindow::updateActionsOnlineOffline(bool online)
     createChildMailbox->setEnabled(online);
     createTopMailbox->setEnabled(online);
     deleteCurrentMailbox->setEnabled(online);
+    m_actionMarkMailboxAsRead->setEnabled(online);
     markAsDeleted->setEnabled(online);
     markAsRead->setEnabled(online);
     showImapCapabilities->setEnabled(online);
@@ -1323,22 +1496,32 @@ void MainWindow::slotReplyGuess()
 
 void MainWindow::slotComposeMailUrl(const QUrl &url)
 {
-    Q_ASSERT(url.scheme().toLower() == QLatin1String("mailto"));
-
-    QStringList list = url.path().split(QLatin1Char('@'));
-    if (list.size() != 2)
+    Imap::Message::MailAddress addr;
+    if (!Imap::Message::MailAddress::fromUrl(addr, url, QLatin1String("mailto")))
         return;
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    Imap::Message::MailAddress addr(url.queryItemValue(QLatin1String("X-Trojita-DisplayName")), QString(),
-                                    list[0], list[1]);
-#else
-    QUrlQuery q(url);
-    Imap::Message::MailAddress addr(q.queryItemValue(QLatin1String("X-Trojita-DisplayName")), QString(),
-                                    list[0], list[1]);
-#endif
     RecipientsType recipients;
     recipients << qMakePair<Composer::RecipientKind,QString>(Composer::ADDRESS_TO, addr.asPrettyString());
     invokeComposeDialog(QString(), QString(), recipients);
+}
+
+void MainWindow::slotManageContact(const QUrl &url)
+{
+    Imap::Message::MailAddress addr;
+    if (!Imap::Message::MailAddress::fromUrl(addr, url, QLatin1String("x-trojita-manage-contact")))
+        return;
+
+    invokeContactEditor();
+    m_contactsWidget->manageContact(addr.mailbox + QLatin1Char('@') + addr.host, addr.name);
+}
+
+void MainWindow::invokeContactEditor()
+{
+    if (m_contactsWidget)
+        return;
+
+    m_contactsWidget = new BE::Contacts(dynamic_cast<AbookAddressbook*>(m_addressBook));
+    m_contactsWidget->setAttribute(Qt::WA_DeleteOnClose, true);
+    m_contactsWidget->show();
 }
 
 ComposeWidget *MainWindow::invokeComposeDialog(const QString &subject, const QString &body,
@@ -1461,6 +1644,11 @@ void MainWindow::slotShowLinkTarget(const QString &link)
     }
 }
 
+void MainWindow::fillMatchingAbookEntries(const QString &mail, QStringList &displayNames)
+{
+    displayNames = addressBook()->prettyNamesForAddress(mail);
+}
+
 void MainWindow::slotShowAboutTrojita()
 {
     QMessageBox::about(this, trUtf8("About Trojitá"),
@@ -1558,7 +1746,8 @@ void MainWindow::slotViewMsgHeaders()
         netAccess->setModelMessage(messageIndex);
 
         SimplePartWidget *headers = new SimplePartWidget(0, netAccess,
-                                        messageIndex.model()->index(0, Imap::Mailbox::TreeItem::OFFSET_HEADER, messageIndex));
+                                        messageIndex.model()->index(0, Imap::Mailbox::TreeItem::OFFSET_HEADER, messageIndex),
+                                                         0);
         headers->setAttribute(Qt::WA_DeleteOnClose);
         connect(headers, SIGNAL(destroyed()), netAccess, SLOT(deleteLater()));
         QAction *close = new QAction(loadIcon(QLatin1String("window-close")), tr("Close"), headers);
@@ -1890,19 +2079,93 @@ void MainWindow::slotUpdateWindowTitle()
 
 void MainWindow::slotLayoutCompact()
 {
+    saveSizesAndState();
+    if (!m_mainHSplitter) {
+        m_mainHSplitter = new QSplitter();
+        connect(m_mainHSplitter, SIGNAL(splitterMoved(int,int)), this, SLOT(saveSizesAndState()));
+        connect(m_mainHSplitter, SIGNAL(splitterMoved(int,int)), this, SLOT(possiblyLoadMessageOnSplittersChanged()));
+    }
+    if (!m_mainVSplitter) {
+        m_mainVSplitter = new QSplitter();
+        m_mainVSplitter->setOrientation(Qt::Vertical);
+        connect(m_mainVSplitter, SIGNAL(splitterMoved(int,int)), this, SLOT(saveSizesAndState()));
+        connect(m_mainVSplitter, SIGNAL(splitterMoved(int,int)), this, SLOT(possiblyLoadMessageOnSplittersChanged()));
+    }
+
+    m_mainVSplitter->addWidget(msgListWidget);
     m_mainVSplitter->addWidget(m_messageWidget);
+    m_mainHSplitter->addWidget(mboxTree);
+    m_mainHSplitter->addWidget(m_mainVSplitter);
+
+    mboxTree->show();
+    msgListWidget->show();
+    m_messageWidget->show();
+    m_mainVSplitter->show();
+    m_mainHSplitter->show();
+
+    // The mboxTree shall not expand...
+    m_mainHSplitter->setStretchFactor(0, 0);
+    // ...while the msgListTree shall consume all the remaining space
+    m_mainHSplitter->setStretchFactor(1, 1);
+
+    setCentralWidget(m_mainHSplitter);
+    setMinimumWidth(MINIMUM_WIDTH_NORMAL);
+
+    delete m_mainStack;
+
+    m_layoutMode = LAYOUT_COMPACT;
     QSettings().setValue(Common::SettingsNames::guiMainWindowLayout, Common::SettingsNames::guiMainWindowLayoutCompact);
-    setMinimumWidth(800);
+    applySizesAndState();
 }
 
 void MainWindow::slotLayoutWide()
 {
+    saveSizesAndState();
+    if (!m_mainHSplitter) {
+        m_mainHSplitter = new QSplitter();
+        connect(m_mainHSplitter, SIGNAL(splitterMoved(int,int)), this, SLOT(saveSizesAndState()));
+        connect(m_mainHSplitter, SIGNAL(splitterMoved(int,int)), this, SLOT(possiblyLoadMessageOnSplittersChanged()));
+    }
+
+    m_mainHSplitter->addWidget(mboxTree);
+    m_mainHSplitter->addWidget(msgListWidget);
     m_mainHSplitter->addWidget(m_messageWidget);
     m_mainHSplitter->setStretchFactor(0, 0);
     m_mainHSplitter->setStretchFactor(1, 1);
     m_mainHSplitter->setStretchFactor(2, 1);
+
+    mboxTree->show();
+    msgListWidget->show();
+    m_messageWidget->show();
+    m_mainHSplitter->show();
+
+    setCentralWidget(m_mainHSplitter);
+    setMinimumWidth(MINIMUM_WIDTH_WIDE);
+
+    delete m_mainStack;
+    delete m_mainVSplitter;
+
+    m_layoutMode = LAYOUT_WIDE;
     QSettings().setValue(Common::SettingsNames::guiMainWindowLayout, Common::SettingsNames::guiMainWindowLayoutWide);
-    setMinimumWidth(1250);
+    applySizesAndState();
+}
+
+void MainWindow::slotLayoutOneAtTime()
+{
+    saveSizesAndState();
+    if (m_mainStack)
+        return;
+
+    m_mainStack = new OnePanelAtTimeWidget(this, mboxTree, msgListWidget, m_messageWidget, m_mainToolbar, m_oneAtTimeGoBack);
+    setCentralWidget(m_mainStack);
+    setMinimumWidth(MINIMUM_WIDTH_NORMAL);
+
+    delete m_mainHSplitter;
+    delete m_mainVSplitter;
+
+    m_layoutMode = LAYOUT_ONE_AT_TIME;
+    QSettings().setValue(Common::SettingsNames::guiMainWindowLayout, Common::SettingsNames::guiMainWindowLayoutOneAtTime);
+    applySizesAndState();
 }
 
 Imap::Mailbox::Model *MainWindow::imapModel() const
@@ -1928,6 +2191,152 @@ void MainWindow::migrateSettings()
     }
 }
 
+void MainWindow::desktopGeometryChanged()
+{
+    QRect geometry = qApp->desktop()->availableGeometry(this);
+    m_actionLayoutWide->setEnabled(geometry.width() >= MINIMUM_WIDTH_WIDE);
+    if (m_layoutMode == LAYOUT_WIDE && !m_actionLayoutWide->isEnabled()) {
+        m_actionLayoutCompact->trigger();
+    }
+    saveSizesAndState();
 }
 
+QString MainWindow::settingsKeyForLayout(const LayoutMode layout)
+{
+    switch (layout) {
+    case LAYOUT_COMPACT:
+        return Common::SettingsNames::guiSizesInMainWinWhenCompact;
+    case LAYOUT_WIDE:
+        return Common::SettingsNames::guiSizesInMainWinWhenWide;
+    case LAYOUT_ONE_AT_TIME:
+        // nothing is saved here
+        break;
+    }
+    return QString();
+}
 
+void MainWindow::saveSizesAndState()
+{
+    if (m_skipSavingOfUI)
+        return;
+
+    QRect geometry = qApp->desktop()->availableGeometry(this);
+    QString key = settingsKeyForLayout(m_layoutMode);
+    if (key.isEmpty())
+        return;
+
+    QList<QByteArray> items;
+    items << saveGeometry();
+    items << saveState();
+    items << (m_mainVSplitter ? m_mainVSplitter->saveState() : QByteArray());
+    items << (m_mainHSplitter ? m_mainHSplitter->saveState() : QByteArray());
+    items << msgListWidget->tree->header()->saveState();
+    items << QByteArray::number(msgListWidget->tree->header()->count());
+    for (int i = 0; i < msgListWidget->tree->header()->count(); ++i) {
+        items << QByteArray::number(msgListWidget->tree->header()->sectionSize(i));
+    }
+    QByteArray buf;
+    QDataStream stream(&buf, QIODevice::WriteOnly);
+    stream << items.size();
+    Q_FOREACH(const QByteArray &item, items) {
+        stream << item;
+    }
+
+    QSettings s;
+    s.setValue(key.arg(QString::number(geometry.width())), buf);
+}
+
+void MainWindow::applySizesAndState()
+{
+    QRect geometry = qApp->desktop()->availableGeometry(this);
+    QString key = settingsKeyForLayout(m_layoutMode);
+    if (key.isEmpty())
+        return;
+
+    QSettings s;
+    QByteArray buf = s.value(key.arg(QString::number(geometry.width()))).toByteArray();
+    if (buf.isEmpty())
+        return;
+
+    int size;
+    QDataStream stream(&buf, QIODevice::ReadOnly);
+    stream >> size;
+    QByteArray item;
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        restoreGeometry(item);
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        restoreState(item);
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        if (m_mainVSplitter) {
+            m_mainVSplitter->restoreState(item);
+        }
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        if (m_mainHSplitter) {
+            m_mainHSplitter->restoreState(item);
+        }
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        msgListWidget->tree->header()->restoreState(item);
+        // got to manually update the state of the actions which control the visibility state
+        msgListWidget->tree->updateActionsAfterRestoredState();
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        bool ok;
+        int columns = item.toInt(&ok);
+        if (ok) {
+            msgListWidget->tree->header()->setStretchLastSection(false);
+            for (int i = 0; i < columns && size-- && !stream.atEnd(); ++i) {
+                stream >> item;
+                int sectionSize = item.toInt();
+                QHeaderView::ResizeMode resizeMode = msgListWidget->tree->resizeModeForColumn(i);
+                if (sectionSize > 0 && resizeMode == QHeaderView::Interactive) {
+                    // fun fact: user cannot resize by mouse when size <= 0
+                    msgListWidget->tree->setColumnWidth(i, sectionSize);
+                } else {
+                    msgListWidget->tree->setColumnWidth(i, msgListWidget->tree->sizeHintForColumn(i));
+                }
+#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+                msgListWidget->tree->header()->setSectionResizeMode(i, resizeMode);
+#else
+                msgListWidget->tree->header()->setResizeMode(i, resizeMode);
+#endif
+            }
+        }
+    }
+}
+
+void MainWindow::resizeEvent(QResizeEvent *)
+{
+    saveSizesAndState();
+}
+
+/** @short Make sure that the message gets loaded after the splitters have changed their position */
+void MainWindow::possiblyLoadMessageOnSplittersChanged()
+{
+    if (m_messageWidget->isVisible() && !m_messageWidget->size().isEmpty()) {
+        // We do not have to check whether it's a different message; the setMessage() will do this or us
+        // and there are multiple proxy models involved anyway
+        QModelIndex index = msgListWidget->tree->currentIndex();
+        if (index.isValid()) {
+            // OTOH, setting an invalid QModelIndex would happily assert-fail
+            m_messageWidget->messageView->setMessage(msgListWidget->tree->currentIndex());
+        }
+    }
+}
+
+}

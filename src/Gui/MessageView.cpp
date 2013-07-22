@@ -63,7 +63,7 @@ MessageView::MessageView(QWidget *parent): QWidget(parent)
     setFocusPolicy(Qt::StrongFocus); // not by the wheel
     netAccess = new Imap::Network::MsgPartNetAccessManager(this);
     connect(netAccess, SIGNAL(requestingExternal(QUrl)), this, SLOT(externalsRequested(QUrl)));
-    factory = new PartWidgetFactory(netAccess, this, this);
+    factory = new PartWidgetFactory(netAccess, this);
 
     emptyView = new EmbeddedWebView(this, new QNetworkAccessManager(this));
     emptyView->setFixedSize(450,300);
@@ -89,8 +89,7 @@ MessageView::MessageView(QWidget *parent): QWidget(parent)
     headerSection->setAutoFillBackground(true);
 
     // the actual mail header
-    m_envelope = new EnvelopeView(headerSection);
-    connect(m_envelope, SIGNAL(linkActivated(QString)), this, SLOT(headerLinkActivated(QString)));
+    m_envelope = new EnvelopeView(headerSection, this);
 
     // the tag bar
     tags = new TagListWidget(headerSection);
@@ -267,10 +266,11 @@ bool MessageView::eventFilter(QObject *object, QEvent *event)
         case Qt::Key_Down:
         case Qt::Key_PageUp:
         case Qt::Key_PageDown:
-        case Qt::Key_Home:
-        case Qt::Key_End:
             MessageView::event(event);
             return true;
+        case Qt::Key_Home:
+        case Qt::Key_End:
+            return false;
         default:
             return QObject::eventFilter(object, event);
         }

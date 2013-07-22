@@ -42,6 +42,7 @@
 #include "Gui/Util.h"
 #include "Window.h"
 #include "ui_ComposeWidget.h"
+#include "Gui/Util.h"
 
 #include "Composer/MessageComposer.h"
 #include "Composer/ReplaceSignature.h"
@@ -229,6 +230,11 @@ bool ComposeWidget::buildMessageData()
         gotError(tr("The From: address does not look like a valid one"));
         return false;
     }
+    if (ui->subject->text().isEmpty()) {
+        gotError(tr("You haven't entered any subject. Cannot send such a mail, sorry."));
+        ui->subject->setFocus();
+        return false;
+    }
     m_submission->composer()->setFrom(fromAddress);
 
     m_submission->composer()->setTimestamp(QDateTime::currentDateTime());
@@ -296,6 +302,7 @@ void ComposeWidget::setData(const QList<QPair<Composer::RecipientKind, QString> 
         addRecipient(i, recipients.at(i).first, recipients.at(i).second);
     }
     updateRecipientList();
+    ui->envelopeLayout->itemAt(OFFSET_OF_FIRST_ADDRESSEE, QFormLayout::FieldRole)->widget()->setFocus();
     ui->subject->setText(subject);
     const bool wasEdited = m_messageEverEdited;
     ui->mailText->setText(body);
@@ -412,6 +419,8 @@ void ComposeWidget::addRecipient(int position, Composer::RecipientKind kind, con
     combo->addItem(tr("Bcc"), Composer::ADDRESS_BCC);
     combo->setCurrentIndex(combo->findData(kind));
     LineEdit *edit = new LineEdit(address, this);
+    slotCheckAddress(edit);
+    connect(edit, SIGNAL(textChanged(QString)), this, SLOT(slotCheckAddress()));
     connect(edit, SIGNAL(textEdited(QString)), SLOT(completeRecipients(QString)));
     connect(edit, SIGNAL(editingFinished()), SLOT(collapseRecipients()));
     connect(edit, SIGNAL(textChanged(QString)), m_recipientListUpdateTimer, SLOT(start()));
@@ -419,6 +428,25 @@ void ComposeWidget::addRecipient(int position, Composer::RecipientKind kind, con
     ui->envelopeLayout->insertRow(actualRow(ui->envelopeLayout, position + OFFSET_OF_FIRST_ADDRESSEE), combo, edit);
     setTabOrder(formPredecessor(ui->envelopeLayout, combo), combo);
     setTabOrder(combo, edit);
+}
+
+void ComposeWidget::slotCheckAddress()
+{
+    LineEdit *edit = qobject_cast<LineEdit*>(sender());
+    Q_ASSERT(edit);
+    slotCheckAddress(edit);
+}
+
+void ComposeWidget::slotCheckAddress(QLineEdit *edit)
+{
+    Imap::Message::MailAddress addr;
+    if (edit->text().isEmpty() || Imap::Message::MailAddress::fromPrettyString(addr, edit->text())) {
+        edit->setPalette(QPalette());
+    } else {
+        QPalette p;
+        p.setColor(QPalette::Base, Gui::Util::tintColor(p.color(QPalette::Base), QColor(0xff, 0, 0, 0x20)));
+        edit->setPalette(p);
+    }
 }
 
 void ComposeWidget::removeRecipient(int pos)
@@ -643,11 +671,14 @@ bool ComposeWidget::setReplyMode(const Composer::ReplyMode mode)
     while (!m_recipients.isEmpty())
         removeRecipient(0);
 
-    Q_FOREACH(const Composer::RecipientList::value_type &recipient, list) {
+    Q_FOREACH(Composer::RecipientList::value_type recipient, list) {
+        if (!recipient.second.hasUsefulDisplayName())
+            recipient.second.name.clear();
         addRecipient(m_recipients.size(), recipient.first, recipient.second.asPrettyString());
     }
 
     updateRecipientList();
+    ui->mailText->setFocus();
 
     return true;
 }
