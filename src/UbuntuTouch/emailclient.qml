@@ -75,23 +75,24 @@ MainView {
     width: units.gu(150)
     height: units.gu(75)
 
-    ToolbarActions {
-        id: mainTools
-        Action {
-            text: "Settings"
-            onTriggered: {
-                PopupUtils.open(serverSettings)
-            }
-        }
+    Action {
+        id: settingsAction
+        text: "Settings"
+        onTriggered: {
+             PopupUtils.open(serverSettings)
+         }
+     }
 
-        Action {
-            text: "Sync"
-            onTriggered: {
-                showHome();
-            }
+     Action {
+        id: syncAction
+        text: "Sync"
+        onTriggered: {
+            showHome();
         }
     }
-    
+
+    actions: [settingsAction,syncAction]
+
     Tabs {
         id: tabs
         anchors.fill: parent
@@ -101,8 +102,15 @@ MainView {
             title: "Mailboxes"
             page: MailboxListPage {
                 id: mailboxListPage
-                tools: mainTools
                 model: imapAccess.mailboxModel ? imapAccess.mailboxModel : null
+                tools: ToolbarItems {
+                    ToolbarButton {
+                        action: settingsAction
+                    }
+                    ToolbarButton {
+                        action: syncAction
+                    }
+                }
 
                 onMailboxSelected: {
                     imapAccess.msgListModel.setMailbox(mailbox);

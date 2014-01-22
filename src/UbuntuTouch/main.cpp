@@ -1,12 +1,12 @@
-#include <QQuickView>
-#include <QQmlContext>
-#include <QQmlComponent>
-#include <QApplication>
+#include <QtQuick/QQuickView>
+#include <QtGui/QGuiApplication>
+#include <QtQml/QQmlComponent>
+#include <QtQml/QQmlContext>
 #include "QmlSupport/ModelGlue/ImapAccess.h"
 
 int main(int argc, char *argv[])
 {
-    QApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
 
     QQuickView view;
     ImapAccess imapAccess;
