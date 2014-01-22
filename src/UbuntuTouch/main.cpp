@@ -12,7 +12,7 @@ int main(int argc, char *argv[])
     ImapAccess imapAccess;
 
     view.rootContext()->setContextProperty("imapAccess",&imapAccess);
-    view.setSource(QUrl("emailclient.qml"));
+    view.setSource(QUrl("qrc:///emailclient.qml"));
     view.show();
     return app.exec();
 }

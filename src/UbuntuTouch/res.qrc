@@ -1,0 +1,21 @@
+<RCC>
+    <qresource prefix="/">
+        <file>emailclient.qml</file>
+        <file>qml/emailclient/AddressWidget.qml</file>
+        <file>qml/emailclient/BackButton.qml</file>
+        <file>qml/emailclient/ImapSettings.qml</file>
+        <file>qml/emailclient/MailboxListPage.qml</file>
+        <file>qml/emailclient/MainPage.qml</file>
+        <file>qml/emailclient/MessageListPage.qml</file>
+        <file>qml/emailclient/NetworkPolicyButton.qml</file>
+        <file>qml/emailclient/OneMessagePage.qml</file>
+        <file>qml/emailclient/PageHeader.qml</file>
+        <file>qml/emailclient/PasswordInputSheet.qml</file>
+        <file>qml/emailclient/PercentageSectionScroller.qml</file>
+        <file>qml/emailclient/SslSheet.qml</file>
+        <file>qml/emailclient/ToggleableToolIcon.qml</file>
+        <file>qml/emailclient/Utils.js</file>
+        <file>resources/avatar@8.png</file>
+        <file>resources/emailclient64.png</file>
+    </qresource>
+</RCC>

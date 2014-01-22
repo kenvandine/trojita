@@ -5,8 +5,4 @@ Change into the source directory
 $ mkdir build; cd build
 $ cmake .. -DUBUNTUTOUCH=1
 $ make
-$ cd ../src/UbuntuTouch
-$ ../../build/trojita-tp
-
-trojita-tp needs to be run from the src/UbuntuTouch directory to load the 
-qml files, there aren't install targets setup for it in cmake yet.
+$ ./trojita-tp

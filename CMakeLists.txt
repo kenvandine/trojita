@@ -552,6 +552,10 @@ set(trojitaUbuntuTouch_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/UbuntuTouch/main.cpp
 )
 
+set(trojitaUbuntuTouch_RESOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/UbuntuTouch/res.qrc
+)
+
 set(libUbuntuTouch_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/UbuntuTouch/webviewnet.cpp
 )
@@ -678,9 +682,10 @@ elseif(BUILD_HARMATTAN)
     target_link_libraries(trojita-tp QmlModelGlue AppVersion Imap MSA Streams qwwsmtpclient Common Composer MimetypesQt4
         ${QT_QTSQL_LIBRARY} ${QT_QTNETWORK_LIBRARY} ${QT_QTWEBKIT_LIBRARY} ${QT_QTDECLARATIVE_LIBRARY})
 elseif(BUILD_UBUNTUTOUCH)
+    qt5_add_resources(trojitaUbuntuTouch_RESOURCES_OUT ${trojitaUbuntuTouch_RESOURCES})
     add_library(QmlModelGlue ${libQmlModelGlue_SOURCES})
     add_library(UbuntuTouch ${libUbuntuTouch_SOURCES})
-    add_executable(trojita-tp ${trojitaUbuntuTouch_SOURCES})
+    add_executable(trojita-tp ${trojitaUbuntuTouch_SOURCES} ${trojitaUbuntuTouch_RESOURCES_OUT})
     target_link_libraries(trojita-tp UbuntuTouch QmlModelGlue Imap Streams Common)
     qt5_use_modules(QmlModelGlue Core Network)
     qt5_use_modules(UbuntuTouch Network Core Gui Qml Quick)
